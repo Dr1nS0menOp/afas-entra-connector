@@ -93,6 +93,25 @@ pub fn plan(
     (items, notes)
 }
 
+/// Exchange shows automatic replies as HTML: escape the text (names come from AFAS)
+/// and keep its line breaks.
+pub fn reply_html(text: &str) -> String {
+    let mut out = String::with_capacity(text.len() + 16);
+    for c in text.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#39;"),
+            '\n' => out.push_str("<br>"),
+            '\r' => {}
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 fn act(g: &Graph<'_>, cfg: &LeaverConfig, it: &LeaverItem) -> GResult<Vec<String>> {
     let uid = seg(&it.user_id)?;
     let mut done = Vec::new();
@@ -105,10 +124,11 @@ fn act(g: &Graph<'_>, cfg: &LeaverConfig, it: &LeaverItem) -> GResult<Vec<String
         done.push("signed out everywhere".to_string());
     }
     if let Some(msg) = &it.reply {
+        let html = reply_html(msg);
         let body = json!({ "automaticRepliesSetting": {
             "status": "alwaysEnabled",
-            "internalReplyMessage": msg,
-            "externalReplyMessage": if cfg.auto_reply_external { msg.as_str() } else { "" },
+            "internalReplyMessage": html,
+            "externalReplyMessage": if cfg.auto_reply_external { html.as_str() } else { "" },
             "externalAudience": if cfg.auto_reply_external { "all" } else { "none" },
         }});
         match g.call(
@@ -158,7 +178,7 @@ pub fn run(ctx: &Ctx<'_>, cfg: &LeaverConfig, state: &mut ModuleState) -> Module
         } else if ctx.apply {
             for it in &items {
                 let r = act(g, cfg, it);
-                let _ = append_access(
+                let logged = append_access(
                     ctx.state_dir,
                     &AccessEntry {
                         utc: now(),
@@ -175,6 +195,7 @@ pub fn run(ctx: &Ctx<'_>, cfg: &LeaverConfig, state: &mut ModuleState) -> Module
                         actor: ctx.actor.into(),
                     },
                 );
+                super::note_log_failure(&mut rep, logged);
                 match r {
                     Ok(_) => {
                         state

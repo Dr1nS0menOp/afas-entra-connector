@@ -835,14 +835,14 @@ fn roles_settings_exceptions_and_access_export() {
         &a,
         "/settings/roles",
         &format!(
-            "{}&roles.enabled=on&roles.keep_leavers_days=30&roles.max_changes_per_run=25",
+            "{}&roles.enabled=on&roles.keep_leavers_days=20&roles.max_changes_per_run=25",
             csrf(&a)
         ),
     );
     assert_eq!(r.status, 303, "{}", r.text());
     let c = Config::load(&e.cfg_path).unwrap();
     let rc = c.roles.unwrap();
-    assert!(rc.enabled && rc.keep_leavers_days == 30 && rc.max_changes_per_run == 25);
+    assert!(rc.enabled && rc.keep_leavers_days == 20 && rc.max_changes_per_run == 25);
     // Exceptions: unknown group refused, rule group accepted, then removed.
     let until = (chrono::Utc::now().date_naive() + chrono::Days::new(10)).to_string();
     let bad = post(

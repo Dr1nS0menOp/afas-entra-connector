@@ -366,7 +366,7 @@ pub fn run(ctx: &Ctx<'_>, cfg: &RolesConfig) -> ModuleReport {
                     remove_member(g, gid, &u.id)
                 };
                 let a = act(kind, item);
-                let _ = append_access(
+                let logged = append_access(
                     ctx.state_dir,
                     &AccessEntry {
                         utc: now(),
@@ -380,6 +380,7 @@ pub fn run(ctx: &Ctx<'_>, cfg: &RolesConfig) -> ModuleReport {
                         actor: ctx.actor.into(),
                     },
                 );
+                super::note_log_failure(&mut rep, logged);
                 match res {
                     Ok(()) => rep.applied += 1,
                     Err(e) => rep.failed.push(format!(

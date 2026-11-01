@@ -747,6 +747,22 @@ impl Config {
             self.webhook.as_ref(),
         )
         .map_err(AppError::Config)?;
+        // Departing employees are only in the upload for leaver_lookback_days after their
+        // end date. A module that acts on them later would never see them again.
+        let lookback = self.policy.leaver_lookback_days;
+        if let Some(r) = self.roles.as_ref().filter(|r| r.enabled)
+            && r.keep_leavers_days >= lookback
+        {
+            return err(&format!(
+                "roles.keep_leavers_days ({}) must be smaller than policy.leaver_lookback_days ({lookback}): after that, departing employees are no longer in the upload and their groups would never be removed",
+                r.keep_leavers_days
+            ));
+        }
+        if self.leaver.as_ref().is_some_and(|l| l.enabled) && lookback == 0 {
+            return err(
+                "the leaver module needs policy.leaver_lookback_days of at least 1: with 0, departing employees are never in the upload",
+            );
+        }
         Ok(())
     }
 

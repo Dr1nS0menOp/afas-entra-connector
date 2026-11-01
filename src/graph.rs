@@ -34,6 +34,13 @@ impl std::fmt::Display for GraphError {
 
 pub type GResult<T> = std::result::Result<T, GraphError>;
 
+impl GraphError {
+    /// The request may or may not have been carried out (network error or 5xx).
+    pub fn outcome_unknown(&self) -> bool {
+        self.status.is_none_or(|s| s >= 500)
+    }
+}
+
 fn net(msg: String) -> GraphError {
     GraphError {
         status: None,
@@ -87,8 +94,13 @@ impl<'a> Graph<'a> {
     }
 
     /// One request with retries. Returns the status and the JSON body (Null if empty).
+    ///
+    /// A POST is not idempotent (a second Temporary Access Pass, a second mail), so after a
+    /// network error or a 5xx, where Graph may already have done it, a POST is not repeated:
+    /// the caller decides. 429 and 401 are always safe to repeat (nothing was done).
     pub fn call(&self, method: Method, path: &str, body: Option<&Value>) -> GResult<(u16, Value)> {
         let url = self.url(path)?;
+        let repeatable = method != Method::POST;
         let mut refreshed = false;
         let mut attempt = 0;
         loop {
@@ -107,7 +119,7 @@ impl<'a> Graph<'a> {
             self.calls.set(self.calls.get() + 1);
             let wait = match req.send() {
                 Err(e) => {
-                    if attempt >= MAX_ATTEMPTS {
+                    if attempt >= MAX_ATTEMPTS || !repeatable {
                         return Err(net(format!("network error: {e}")));
                     }
                     backoff(attempt, 1000, 30_000)
@@ -132,7 +144,7 @@ impl<'a> Graph<'a> {
                             .get(true)
                             .map_err(|e| net(format!("token: {e}")))?;
                         Duration::ZERO
-                    } else if (status.as_u16() == 429 || status.is_server_error())
+                    } else if (status.as_u16() == 429 || (status.is_server_error() && repeatable))
                         && attempt < MAX_ATTEMPTS
                     {
                         retry_after(&headers, chrono::Utc::now())

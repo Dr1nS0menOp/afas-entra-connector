@@ -29,6 +29,7 @@ use std::time::Duration;
 
 pub const MODULE_STATE_FILE: &str = "modules-state.json";
 const MODULE_STATE_VERSION: u32 = 1;
+const STALE_ATTRS_DAYS: i64 = 7;
 
 /// The attributes the modules look at, per employee, as last seen.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -104,6 +105,9 @@ pub struct ModuleState {
     /// Employee → end date the leaver actions were done for.
     #[serde(default)]
     pub leaver_done: BTreeMap<String, NaiveDate>,
+    /// Day `attrs` was saved; older than a week = start a new baseline.
+    #[serde(default)]
+    pub attrs_date: Option<NaiveDate>,
     /// Webhook events not delivered yet.
     #[serde(default)]
     pub outbox: Vec<webhook::Event>,
@@ -213,6 +217,16 @@ pub struct ModuleReport {
     pub graph_calls: u32,
 }
 
+/// The access log is the audit trail: failing to write it is a failure, reported once.
+pub fn note_log_failure(rep: &mut ModuleReport, res: Result<(), String>) {
+    if let Err(e) = res {
+        let msg = format!("access log not written: {e}");
+        if !rep.failed.contains(&msg) {
+            rep.failed.push(msg);
+        }
+    }
+}
+
 impl ModuleReport {
     pub fn errored(e: impl Into<String>) -> Self {
         ModuleReport {
@@ -297,8 +311,17 @@ pub fn with_graph<R>(
 pub fn run_all(ctx: &Ctx<'_>, state: &mut ModuleState) -> ModulesReport {
     let mut rep = ModulesReport::default();
     let cfg = ctx.cfg;
-    // Events first: they compare with the attributes of the previous run.
-    let events = webhook::detect(ctx.people, &state.attrs, ctx.today);
+    // Events first: they compare with the attributes of the previous run. Attributes
+    // from long ago (modules were off) would turn every change since then into a stale
+    // event, so they only count as a new baseline.
+    let fresh = state
+        .attrs_date
+        .is_some_and(|d| d <= ctx.today && (ctx.today - d).num_days() <= STALE_ATTRS_DAYS);
+    let events = if fresh {
+        webhook::detect(ctx.people, &state.attrs, ctx.today)
+    } else {
+        Vec::new()
+    };
     if let Some(l) = cfg.leaver.as_ref().filter(|l| l.enabled) {
         rep.leaver = Some(leaver::run(ctx, l, state));
     }
@@ -309,9 +332,16 @@ pub fn run_all(ctx: &Ctx<'_>, state: &mut ModuleState) -> ModulesReport {
         rep.roles = Some(roles::run(ctx, r));
     }
     if let Some(w) = cfg.webhook.as_ref().filter(|w| w.enabled) {
-        rep.webhook = Some(webhook::run(ctx, w, state, events));
+        let mut r = webhook::run(ctx, w, state, events);
+        if !fresh && !state.attrs.is_empty() {
+            r.notes.push(format!(
+                "the last comparison is older than {STALE_ATTRS_DAYS} days; this run is a new baseline and sends no events for changes before it"
+            ));
+        }
+        rep.webhook = Some(r);
     }
     if ctx.apply {
+        state.attrs_date = Some(ctx.today);
         state.attrs = ctx
             .people
             .iter()
