@@ -103,7 +103,7 @@ impl System for RealSystem {
         std::io::stdin().is_terminal()
     }
     fn prompt(&self, question: &str, secret: bool) -> Result<String, String> {
-        print!("{question} ");
+        let _ = write!(std::io::stdout(), "{question} ");
         let _ = std::io::stdout().flush();
         let hide = secret
             && Command::new("stty")
@@ -114,13 +114,14 @@ impl System for RealSystem {
         let res = std::io::stdin().lock().read_line(&mut line);
         if hide {
             let _ = Command::new("stty").arg("echo").status();
-            println!();
+            let _ = writeln!(std::io::stdout());
         }
         res.map_err(|e| format!("cannot read input: {e}"))?;
         Ok(line.trim().to_string())
     }
     fn say(&self, line: &str) {
-        println!("{line}");
+        // A closed stdout (e.g. `| head`) must not abort an install halfway.
+        let _ = writeln!(std::io::stdout(), "{line}");
     }
 }
 
