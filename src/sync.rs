@@ -47,6 +47,9 @@ pub struct Report {
     /// Results of the optional modules (roles, joiner, leaver, webhook).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub modules: Option<crate::modules::ModulesReport>,
+    /// Things to act on that are not about records, e.g. a certificate about to expire.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notices: Vec<String>,
     pub result: String,
     pub exit_code: i32,
 }
@@ -87,6 +90,7 @@ pub fn run(
         disappeared_while_active: vec![],
         upload: None,
         modules: None,
+        notices: Vec::new(),
         result: String::new(),
         exit_code: exit::OK,
     };
@@ -120,6 +124,15 @@ pub fn run(
             };
             report.exit_code = code;
             report.result = text.into();
+            // Certificates: a notice from 30 days before expiry; exit 3 from 7 days, so
+            // monitoring raises it before sign-in starts failing.
+            let (notices, urgent) =
+                crate::ux::cert_notices(&crate::ux::certificates(cfg, chrono::Utc::now()));
+            report.notices = notices;
+            if urgent && report.exit_code == exit::OK {
+                report.exit_code = exit::COMPLETED_WITH_EXCLUSIONS;
+                report.result = "ok, but a certificate expires within 7 days (see notices)".into();
+            }
             (Ok(()), Some(plan))
         }
         Err(e) => {

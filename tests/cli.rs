@@ -352,3 +352,56 @@ fn exception_add_checks_the_group_like_the_gui() {
     );
     assert!(dir.path().join("state/exceptions.json").exists());
 }
+
+#[test]
+fn doctor_and_afas_fields_via_cli() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("state")).unwrap();
+    let mut afas = Server::new();
+    afas.mock("GET", Matcher::Any)
+        .with_body(afas_body(&[row("00001", d("2020-01-01"), None)]))
+        .create();
+    let mut ms = Server::new();
+    ms.mock("POST", Matcher::Regex("token".into()))
+        .with_body(r#"{"access_token":"tok","expires_in":3600}"#)
+        .create();
+    ms.mock("GET", Matcher::Regex("auditLogs".into()))
+        .with_body(r#"{"value":[]}"#)
+        .create();
+    let cfg = write_cfg(dir.path(), &afas.url(), &ms.url());
+    let out = bin()
+        .args(["-c", cfg.to_str().unwrap(), "doctor", "--json"])
+        .env("TEST_AFAS_TOKEN", "ABCDEF0123456789")
+        .env("TEST_ENTRA_SECRET", "s3cr3t-value-for-tests")
+        .output()
+        .unwrap();
+    let checks: Value = serde_json::from_slice(&out.stdout).unwrap();
+    let levels: Vec<&str> = checks
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["level"].as_str().unwrap())
+        .collect();
+    assert!(!levels.contains(&"fail"), "{checks:#}");
+    // A client secret instead of a certificate is a warning: exit 3.
+    assert!(levels.contains(&"warn"));
+    assert_eq!(out.status.code(), Some(3), "{checks:#}");
+
+    let out = bin()
+        .args(["-c", cfg.to_str().unwrap(), "afas-fields", "--json"])
+        .env("TEST_AFAS_TOKEN", "ABCDEF0123456789")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    let fields: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(
+        fields
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|f| f["field"] == "UPN"
+                && f["mapped_to"] == "afas.fields.upn"
+                && f["kind"] == "text with @")
+    );
+    assert!(!String::from_utf8_lossy(&out.stdout).contains("user00001@contoso.nl"));
+}

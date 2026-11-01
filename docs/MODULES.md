@@ -51,22 +51,26 @@ When several apply, the highest wins (42 over 21 over 3).
 
 Do this once per module you use (`afas-entra-sync-roles`, `-joiner`, `-leaver`).
 
-1. Create a certificate on the Linux host, as root:
+1. On the Linux host, as root:
 
    ```
-   cd /etc/afas-entra-sync
-   openssl req -x509 -newkey rsa:3072 -sha256 -days 365 -nodes \
-     -subj "/CN=afas-entra-sync-roles" -keyout roles-key.pem -out roles-cert.pem
-   chown afas-entra-sync: roles-key.pem roles-cert.pem
-   chmod 0600 roles-key.pem
+   sudo afas-entra-sync module-setup roles      # or joiner, leaver
    ```
+
+   This creates `roles-cert.pem` and `roles-key.pem` in `/etc/afas-entra-sync` (key
+   readable only by the service user, mode 0600) and prints the steps below with the
+   thumbprint, the exact permissions and the config section to add. Running it again
+   keeps the certificate; `--renew` makes a new one a month before it expires (the old
+   one is kept as `*.pem.old`).
 
 2. In Entra: *App registrations → New registration*, single tenant, no redirect URI.
 3. *Certificates & secrets → Certificates → Upload* `roles-cert.pem`. No client secret.
 4. *API permissions → Add → Microsoft Graph → Application permissions*: the permissions
    from the table above, then *Grant admin consent*.
-5. Fill in `client_id`, `certificate_pem` and `private_key_pem` in the module section.
-6. Test run (dry-run): `afas-entra-sync -c config.toml sync`. Check `modules` in the report.
+5. Add the printed section to the config file and fill in `client_id`.
+6. Check it: `afas-entra-sync doctor` signs in as the module and reads what it will need
+   (groups, users, sign-in codes, mailbox settings), and names any missing permission.
+7. Test run (dry-run): `afas-entra-sync sync`. Check the modules part of the summary.
 
 The tenant, login and Graph addresses come from `[entra]`.
 
@@ -136,11 +140,11 @@ hand is reported too. Every group in a conflict rule must also be in a role rule
 **Exceptions.** A manual, time-limited deviation, with a reason:
 
 ```
-afas-entra-sync -c config.toml exception add --employee 10422 \
+afas-entra-sync exception add --employee 10422 \
   --group 22222222-2222-2222-2222-222222222222 --kind include \
   --until 2026-12-31 --reason "Year-end close support"
-afas-entra-sync -c config.toml exception list
-afas-entra-sync -c config.toml exception remove <id>
+afas-entra-sync exception list
+afas-entra-sync exception remove <id>
 ```
 
 `include` keeps or puts someone in a group, `exclude` keeps them out. At most one year
@@ -318,9 +322,9 @@ Every change a module made, successful or not. If the log cannot be written, the
 reports a failure (exit 42), because the audit trail would be incomplete.
 
 ```
-afas-entra-sync -c config.toml report                       # JSON, everything
-afas-entra-sync -c config.toml report --employee 10388      # one employee
-afas-entra-sync -c config.toml report --since 2026-01-01 --csv > access.csv
+afas-entra-sync report                       # JSON, everything
+afas-entra-sync report --employee 10388      # one employee
+afas-entra-sync report --since 2026-01-01 --csv > access.csv
 ```
 
 Columns: time (UTC), module, action, employee number, UPN, target (group or mail recipient),

@@ -1,7 +1,7 @@
 # Security assurance
 
 How afas-entra-sync is checked against public security standards, and how you can verify
-the claims yourself. Last reviewed 2026-11-01 (version 0.9.3).
+the claims yourself. Last reviewed 2026-11-01 (version 0.10.0).
 
 | Framework | What it covers | Status | Evidence |
 | --- | --- | --- | --- |
@@ -17,18 +17,18 @@ supports it.
 ## How to verify
 
 ```
-cargo test                        # 218 tests, including the security tests named in the CSV
+cargo test                        # 238 tests, including the security tests named in the CSV
 cargo clippy --all-targets -- -D warnings
 cargo deny check                  # known vulnerabilities, licences, sources (deny.toml)
 cargo audit                       # RustSec advisory database
 cargo +nightly fuzz run <target>  # fuzz/: afas_response, config, small_parsers, gui_request
 python3 docs/security/asvs_assessment.py --check   # ASVS evidence current and resolving
-(cd docs/security/evidence/2026-11-01 && sha256sum -c SHA256SUMS)
+for d in docs/security/evidence/*/; do (cd "$d" && sha256sum -c SHA256SUMS); done
 gh attestation verify afas-entra-sync-<version>-linux-x86_64.tar.gz --repo <owner>/afas-entra-sync
 ```
 
 The latest results are in [SCAN-REPORT.md](SCAN-REPORT.md); the raw tool output, with
-checksums, in [evidence/](evidence/2026-11-01/MANIFEST.md).
+checksums, in [evidence/](evidence/2026-11-01-v0.10.0/MANIFEST.md) (0.10.0) and [the 0.9.3 run](evidence/2026-11-01/MANIFEST.md).
 
 ## How the evidence stays true
 

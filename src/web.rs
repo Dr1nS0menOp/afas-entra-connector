@@ -1146,6 +1146,7 @@ pub fn handle(app: &App, r: &Request<'_>) -> Response {
             "/run/check-config" => post_check_config(app, &user),
             "/run/check-logs" => post_check_logs(app, &form, &user),
             "/run/check-tls" => post_check_tls(app, &user),
+            "/run/doctor" => post_doctor(app, &user),
             "/payload/delete" => post_payload_delete(&layers, &user),
             "/gui/off" => post_gui_off(app, &layers, &user),
             "/exceptions/add" => post_exception_add(app, &layers, &form, &user),
@@ -1625,6 +1626,105 @@ fn post_check_logs(app: &App, form: &[(String, String)], user: &str) -> Response
     })
 }
 
+/// The health check (`doctor`): read-only, like the CLI command.
+fn post_doctor(app: &App, user: &str) -> Response {
+    let (cfg_path, sleep, proxy) = (
+        app.opts.config_path.clone(),
+        app.sleep.clone(),
+        app.use_system_proxy,
+    );
+    let dir = match Config::load(&cfg_path) {
+        Ok(c) => c.state.dir,
+        Err(e) => return text(500, &e.to_string()),
+    };
+    start_run(app, "health check", user, &dir, move || {
+        let cfg = match Config::load(&cfg_path) {
+            Ok(c) => c,
+            Err(e) => return (crate::error::exit::DOCTOR, e.to_string()),
+        };
+        let s = |d: Duration| sleep(d);
+        let o = crate::doctor::Options {
+            sleep: &s,
+            use_system_proxy: proxy,
+            now: chrono::Utc::now(),
+            systemctl: &crate::doctor::real_systemctl,
+            tls: true,
+        };
+        let checks = crate::doctor::run(&cfg, &cfg_path, &o);
+        // Stored as JSON; the Run page renders it as a list (`health_html`).
+        (
+            crate::doctor::exit_code(&checks),
+            serde_json::to_string(&checks).unwrap_or_default(),
+        )
+    })
+}
+
+/// The health check result as a list per area, problems first in each area's order.
+fn health_html(d: &RunDone) -> Option<String> {
+    let checks: Vec<serde_json::Value> = serde_json::from_str(&d.summary).ok()?;
+    let count = |l: &str| checks.iter().filter(|c| c["level"] == l).count();
+    let (fails, warns) = (count("fail"), count("warn"));
+    let (tone, title) = match (fails, warns) {
+        (0, 0) => ("ok", "Everything checks out".to_string()),
+        (0, w) => (
+            "warn",
+            format!(
+                "{w} warning{}, nothing is broken",
+                if w == 1 { "" } else { "s" }
+            ),
+        ),
+        (f, _) => (
+            "bad",
+            format!("{f} problem{} to fix", if f == 1 { "" } else { "s" }),
+        ),
+    };
+    let mut b = format!(
+        "<section class=\"verdict {tone}\"><p class=kicker>Health check by {}, finished at {}, exit code {}</p><h2>{}</h2>{}</section><section class=health>",
+        esc(&d.user),
+        esc(&fmt_time(&d.finished)),
+        d.exit_code,
+        esc(&title),
+        if fails + warns > 0 {
+            "<p>Fix them top to bottom, then run the health check again.</p>"
+        } else {
+            "<p>Nothing to do.</p>"
+        }
+    );
+    let mut area = "";
+    for c in &checks {
+        let a = c["area"].as_str().unwrap_or("");
+        if a != area {
+            if !area.is_empty() {
+                b.push_str("</ul>");
+            }
+            area = a;
+            let _ = write!(b, "<h3>{}</h3><ul>", esc(a));
+        }
+        let level = c["level"].as_str().unwrap_or("info");
+        let mark = match level {
+            "ok" => "OK",
+            "warn" => "Warning",
+            "fail" => "Problem",
+            _ => "Note",
+        };
+        let _ = write!(
+            b,
+            "<li class={level}><span class=mark>{mark}</span><div><b>{}</b> {}",
+            esc(c["check"].as_str().unwrap_or("")),
+            esc(c["detail"].as_str().unwrap_or(""))
+        );
+        if let Some(f) = c["fix"].as_str() {
+            let _ = write!(b, "<p class=fix>What to do: {}</p>", esc(f));
+        }
+        b.push_str("</div></li>");
+    }
+    if !area.is_empty() {
+        b.push_str("</ul>");
+    }
+    b.push_str("</section>");
+    Some(b)
+}
+
 fn post_check_tls(app: &App, user: &str) -> Response {
     let cfg_path = app.opts.config_path.clone();
     let dir = match Config::load(&cfg_path) {
@@ -1775,6 +1875,14 @@ fn page_overview(app: &App, l: &Layers) -> String {
         esc(&detail),
     );
 
+    if let Some(n) = r["notices"].as_array().filter(|n| !n.is_empty()) {
+        b.push_str("<section class=\"verdict warn\"><h2>Needs your attention</h2><ul>");
+        for x in n {
+            let _ = write!(b, "<li>{}</li>", esc(x.as_str().unwrap_or("")));
+        }
+        b.push_str("</ul></section>");
+    }
+
     // The flow strip: how the AFAS rows were distributed.
     let parts = [
         ("Active", n("sent_active"), "s-active"),
@@ -1814,8 +1922,13 @@ fn page_overview(app: &App, l: &Layers) -> String {
     }
     let _ = write!(
         b,
-        "</dl><p class=note>{} sent in {} API calls. {} new disables.</p></section>",
+        "</dl><p class=note>{} {} {} API calls. {} new disables.</p></section>",
         n("sent_total"),
+        if r["mode"] == "apply" {
+            "sent in"
+        } else {
+            "would be sent in"
+        },
         n("api_calls_needed"),
         n("new_disables")
     );
@@ -1902,6 +2015,10 @@ fn page_run(app: &App, l: &Layers, error: Option<&str>) -> String {
                 esc(&cur.user),
                 esc(&capital(&cur.kind))
             );
+        } else if let Some(d) = &st.last
+            && let Some(h) = (d.kind == "health check").then(|| health_html(d)).flatten()
+        {
+            b.push_str(&h);
         } else if let Some(d) = &st.last {
             let tone = match d.exit_code {
                 0 => "ok",
@@ -1954,8 +2071,9 @@ fn page_run(app: &App, l: &Layers, error: Option<&str>) -> String {
     );
     let _ = write!(
         b,
-        "<section class=action><div><h2>Checks</h2><p>Check the configuration, see which TLS version and key exchange AFAS and Microsoft negotiate, or go through the Microsoft provisioning logs for failed records.</p></div>\
-<div class=row><form method=post action=/run/check-config><input type=hidden name=csrf value={csrf}><button class=quiet{dis}>Check configuration</button></form>\
+        "<section class=action><div><h2>Checks</h2><p>The health check goes through everything (settings, secrets, AFAS fields, Entra sign-in and permissions, certificates, TLS, schedule) and says how to fix what is wrong. It changes nothing. The other checks look at one part.</p></div>\
+<div class=row><form method=post action=/run/doctor><input type=hidden name=csrf value={csrf}><button{dis}>Run health check</button></form>\
+<form method=post action=/run/check-config><input type=hidden name=csrf value={csrf}><button class=quiet{dis}>Check configuration</button></form>\
 <form method=post action=/run/check-tls><input type=hidden name=csrf value={csrf}><button class=quiet{dis}>Check TLS</button></form>\
 <form method=post action=/run/check-logs class=inline><input type=hidden name=csrf value={csrf}><label>Last <input name=minutes value=60 size=5 inputmode=numeric{dis}> minutes</label><button class=quiet{dis}>Check logs</button></form></div></section>"
     );
@@ -2641,6 +2759,11 @@ section{margin:0 0 36px}.lead{font-size:18px;color:var(--muted);max-width:62ch;m
 .verdict.ok{border-color:var(--ok)}.verdict.warn{border-color:var(--warn)}.verdict.bad{border-color:var(--bad)}.verdict.busy{border-color:var(--accent)}
 .verdict p{margin:0;max-width:70ch}.kicker{color:var(--muted);font-size:14px}
 .verdict pre{white-space:pre-wrap;font:inherit;margin:4px 0 0;max-width:72ch}
+.health{max-width:860px}.health h3{font-size:16px;margin:22px 0 6px}.health ul{list-style:none;margin:0;padding:0;border-top:1px solid var(--line)}
+.health li{display:grid;grid-template-columns:6.5em 1fr;gap:12px;padding:8px 0;border-bottom:1px solid var(--line)}
+.health .mark{font-size:13px;font-weight:600;padding-top:2px}.health li.ok .mark{color:var(--ok)}.health li.warn .mark{color:var(--warn)}
+.health li.fail .mark{color:var(--bad)}.health li.info .mark{color:var(--muted)}.health li.ok div,.health li.info div{color:var(--muted)}
+.health li.ok b,.health li.info b{font-weight:500}.health .fix{margin:4px 0 0;color:var(--ink)}
 .flow{display:flex;height:34px;border-radius:5px;overflow:hidden;gap:2px;background:var(--line);margin:14px 0 12px}
 .flow span{min-width:3px}
 .s-active{background:var(--s-active)}.s-pre{background:var(--s-pre)}.s-leave{background:var(--s-leave)}.s-excl{background:var(--s-excl)}.s-skip{background:var(--s-skip)}

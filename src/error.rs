@@ -34,6 +34,8 @@ pub mod exit {
     pub const MODULE_FAILED: i32 = 42;
     /// `check-tls`: an endpoint does not meet the `[tls]` policy.
     pub const TLS: i32 = 60;
+    /// `doctor`: at least one check failed.
+    pub const DOCTOR: i32 = 61;
     /// Unexpected internal error.
     pub const INTERNAL: i32 = 70;
 }

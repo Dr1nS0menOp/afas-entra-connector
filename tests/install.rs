@@ -4,8 +4,8 @@
 
 use afas_entra_sync::config::Config;
 use afas_entra_sync::install::{
-    Answers, InstallOptions, System, UninstallOptions, build_config, install, new_certificate,
-    thumbprint, uninstall, unit_files,
+    Answers, InstallOptions, ModuleSetupOptions, SetupModule, System, UninstallOptions,
+    build_config, install, module_setup, new_certificate, thumbprint, uninstall, unit_files,
 };
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -465,4 +465,119 @@ fn unit_files_are_hardened_and_run_as_service_user() {
     let sync = &unit_files(false)[0].1;
     assert!(sync.contains("sync --apply"));
     assert_eq!(unit_files(false).len(), 4);
+}
+
+// ------------------------------------------------------------------ module-setup
+
+fn setup(e: &Env, sys: &Fake, m: SetupModule, renew: bool) -> Result<String, String> {
+    module_setup(
+        sys,
+        &ModuleSetupOptions {
+            root: e.root(),
+            module: m,
+            renew,
+        },
+    )
+}
+
+#[test]
+fn module_setup_needs_root_and_an_installation() {
+    let e = Env::new();
+    let mut sys = Fake::new();
+    assert!(
+        setup(&e, &sys, SetupModule::Roles, false)
+            .unwrap_err()
+            .contains("install")
+    );
+    sys.root = false;
+    assert!(
+        setup(&e, &sys, SetupModule::Roles, false)
+            .unwrap_err()
+            .contains("root")
+    );
+    assert!(SetupModule::parse("payroll").is_err());
+    assert_eq!(SetupModule::parse("joiner").unwrap(), SetupModule::Joiner);
+}
+
+#[test]
+fn module_setup_creates_a_private_key_and_prints_a_working_config_section() {
+    let e = Env::new();
+    let sys = Fake::new();
+    install(&sys, &e.opts()).unwrap();
+    sys.said.borrow_mut().clear();
+    sys.chowned.borrow_mut().clear();
+    let tp = setup(&e, &sys, SetupModule::Roles, false).unwrap();
+    let key = e.f("/etc/afas-entra-sync/roles-key.pem");
+    let cert = e.f("/etc/afas-entra-sync/roles-cert.pem");
+    assert_eq!(mode(&key), 0o600);
+    assert_eq!(mode(&cert), 0o644);
+    assert!(
+        sys.chowned
+            .borrow()
+            .iter()
+            .any(|(p, uid)| p == &key && *uid == 990)
+    );
+    assert_eq!(tp, thumbprint(&std::fs::read(&cert).unwrap()).unwrap());
+    let said = sys.said.borrow().join("\n");
+    assert!(
+        said.contains("GroupMember.ReadWrite.All, User.Read.All"),
+        "{said}"
+    );
+    assert!(said.contains(&tp));
+    assert!(said.contains("afas-entra-sync doctor"));
+
+    // The printed section, with the placeholders filled in, is a valid config.
+    let start = said.find("[roles]").unwrap();
+    let end = said[start..].find("  5.").map_or(said.len(), |i| start + i);
+    let section = said[start..end]
+        .replace("<application id>", "c0000000-0000-0000-0000-000000000001")
+        .replace(
+            "<object id of a cloud security group>",
+            "a1a1a1a1-0000-0000-0000-000000000001",
+        )
+        .replace(
+            "/etc/afas-entra-sync/",
+            &format!("{}/", e.f("/etc/afas-entra-sync").display()),
+        );
+    let cfg_path = e.f("/etc/afas-entra-sync/config.toml");
+    let text = std::fs::read_to_string(&cfg_path).unwrap() + "\n" + &section;
+    let cfg = Config::parse(&text).unwrap_or_else(|err| panic!("{err}\n{section}"));
+    assert!(cfg.roles.unwrap().enabled);
+
+    // Again: kept. With --renew: new certificate, old one kept, upload hint only.
+    assert_eq!(setup(&e, &sys, SetupModule::Roles, false).unwrap(), tp);
+    sys.said.borrow_mut().clear();
+    let tp2 = setup(&e, &sys, SetupModule::Roles, true).unwrap();
+    assert_ne!(tp, tp2);
+    assert!(e.f("/etc/afas-entra-sync/roles-key.pem.old").exists());
+    assert_eq!(mode(&key), 0o600);
+    let said = sys.said.borrow().join("\n");
+    assert!(
+        said.contains("Upload the new") && !said.contains("[roles]"),
+        "{said}"
+    );
+}
+
+#[test]
+fn module_setup_tells_joiner_not_to_grant_mail_send_in_entra() {
+    let e = Env::new();
+    let sys = Fake::new();
+    install(&sys, &e.opts()).unwrap();
+    for (m, perm) in [
+        (SetupModule::Joiner, "UserAuthMethod-TAP.ReadWrite.All"),
+        (SetupModule::Leaver, "User.RevokeSessions.All"),
+    ] {
+        sys.said.borrow_mut().clear();
+        setup(&e, &sys, m, false).unwrap();
+        let said = sys.said.borrow().join("\n");
+        assert!(said.contains(perm), "{said}");
+        assert_eq!(
+            said.contains("do NOT grant it in Entra"),
+            m == SetupModule::Joiner
+        );
+        assert!(
+            e.f(&format!("/etc/afas-entra-sync/{}-key.pem", m.key()))
+                .exists()
+        );
+    }
 }

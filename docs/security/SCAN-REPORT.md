@@ -1,7 +1,8 @@
 # Security scan report
 
-Version 0.9.3, scanned 2026-11-01 on the release commit. Raw output of every scan, with
-SHA-256 checksums: [evidence/2026-11-01](evidence/2026-11-01/MANIFEST.md). Toolchain: rustc 1.97.0 (stable),
+Version 0.10.0, scanned 2026-11-01 on the release commit. Raw output of every scan, with
+SHA-256 checksums: [evidence/2026-11-01-v0.10.0](evidence/2026-11-01-v0.10.0/MANIFEST.md); the
+full fuzzing campaign and mutation testing of 0.9.3 in [evidence/2026-11-01](evidence/2026-11-01/MANIFEST.md). Toolchain: rustc 1.97.0 (stable),
 nightly 1.101.0 for fuzzing. Every scan below also runs in CI (`.github/workflows/`), so
 the next result is in the repository's Actions and Security tabs.
 
@@ -11,14 +12,14 @@ the next result is in the repository's Actions and Security tabs.
 | --- | --- | --- |
 | Known vulnerabilities in dependencies | cargo-audit 0.22.2, RustSec database (1,395 advisories) | 0 vulnerabilities, 0 warnings in 303 crates |
 | Dependency policy | cargo-deny 0.20.2, `deny.toml` | advisories ok, bans ok, licences ok, sources ok |
-| Static analysis (SAST) | semgrep 1.183.0, 252 official rules (Rust security, secrets, bash, GitHub Actions) | 0 open findings; 2 triaged as intended (below); 1 fixed |
+| Static analysis (SAST) | semgrep 1.183.0, 252 official rules (Rust security, secrets, bash, GitHub Actions) | 0 open findings; 3 triaged as intended (below); 1 fixed |
 | Static analysis (SAST) | CodeQL (Rust, Actions), `security-extended` | Runs in CI on GitHub; not available offline |
 | Lint | clippy, warnings as errors; `unwrap`/`expect`/`panic` denied in production code | Clean |
 | Secrets | detect-secrets 1.5.0, all tracked files and full git history | 0 secrets; 8 hits reviewed as false positives (`.secrets.baseline`) |
 | CI workflows | zizmor 1.31.1, pedantic | 0 findings |
 | Shell scripts | shellcheck 0.11.0, style level | Clean (`install.sh`, Checkmk check) |
-| Dynamic analysis | cargo-fuzz 0.13.2 (libFuzzer, AddressSanitizer), 4 targets | 1 crash found and fixed; afterwards clean |
-| Tests | `cargo test` | 218 passed, 0 failed |
+| Dynamic analysis | cargo-fuzz 0.13.2 (libFuzzer, AddressSanitizer), 4 targets | 1 crash found and fixed in 0.9.3; afterwards clean; GUI target run again on 0.10.0, clean |
+| Tests | `cargo test` | 238 passed, 0 failed |
 | Mutation testing | cargo-mutants (modules, Graph client, GUI sessions) | 4 equivalent mutants remain (MUTATION-REPORT.md) |
 | Browser check | Chromium (Playwright) against the GUI | `__Host-` cookie with Secure/HttpOnly/SameSite=Strict accepted over http://127.0.0.1; login link single-use; sign-out clears the cookie |
 | Software bill of materials | cargo-cyclonedx 0.5.7 | CycloneDX 1.3, 212 components (attached to each release) |
@@ -52,6 +53,7 @@ the next result is in the repository's Actions and Security tabs.
 | --- | --- | --- |
 | semgrep `current-exe` | `src/main.rs` | Fallback only when `/proc` is missing (the installer targets Linux) |
 | semgrep `temp-dir` | `fuzz/fuzz_targets/gui_request.rs` | Fuzz harness, not shipped |
+| semgrep `args` | `src/main.rs` | The arguments are only echoed in the suggested `sudo -u` command when the wrong user runs the program; no decision depends on them (0.10.0) |
 | detect-secrets | `tests/fixtures/*.pem` | Test-only keys (`tests/fixtures/README.md`) |
 | detect-secrets | `tests/modules.rs`, `tests/module_rules.rs` | Published HMAC test vectors (RFC 4231) and reference values |
 | detect-secrets | `docs/MODULES.md`, `.github/workflows/ci.yml` | The word "secret" next to a variable name |

@@ -1178,3 +1178,28 @@ fn request_body_limit_is_exactly_64_kib() {
     let over = at_limit + "a";
     assert_eq!(post_as(&a, &id, "/settings/safety", &over).status, 413);
 }
+
+#[test]
+fn health_check_runs_from_the_gui_and_shows_fixes() {
+    let afas = afas_with_rows();
+    let mut entra = mockito::Server::new();
+    entra
+        .mock("POST", mockito::Matcher::Regex("token".into()))
+        .with_body(r#"{"access_token":"tok1","expires_in":3600}"#)
+        .create();
+    entra
+        .mock("GET", mockito::Matcher::Regex("auditLogs".into()))
+        .with_status(403)
+        .with_body(r#"{"error":{"code":"Authorization_RequestDenied","message":"Insufficient privileges"}}"#)
+        .create();
+    let e = env_with(&afas.url(), &entra.url(), &format!("{EXTRA}{GUI_ON}"));
+    let a = app(&e, false, None);
+    assert!(get(&a, "/run").text().contains("Run health check"));
+    post(&a, "/run/doctor", &csrf(&a));
+    let page = get(&a, "/run").text();
+    assert!(page.contains("GetConnector"), "{page}");
+    assert!(page.contains("Grant admin consent"), "{page}");
+    assert!(page.contains("exit code 61"), "{page}");
+    assert!(page.contains("1 problem to fix") && page.contains("<li class=fail>"), "{page}");
+    assert!(page.contains("What to do: grant the application permission ProvisioningLog.Read.All"));
+}

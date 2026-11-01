@@ -51,6 +51,7 @@ The optional admin GUI (off by default, local or behind your SSO proxy). Demo da
 | --- | --- |
 | ![Overview of a run](docs/images/overview.png) | ![Modules](docs/images/modules.png) |
 | ![New hires settings](docs/images/new-hires.png) | ![Access log](docs/images/access-log.png) |
+| ![Health check](docs/images/health-check.png) | |
 
 ## Words used
 
@@ -177,14 +178,14 @@ enabled = true
 - If you turn it off while the GUI is running, the next request is refused and the server stops.
 - In the GUI itself, the **GUI** page has a *Turn off GUI* button: it turns the GUI off and stops
   the server right away. The GUI can never turn itself on. To turn it back on, on the server:
-  `afas-entra-sync -c config.toml gui-enable` (only works if the config file has `enabled = true`).
+  `afas-entra-sync gui-enable` (only works if the config file has `enabled = true`).
 
 ### Starting
 
 ```
-afas-entra-sync -c config.toml serve                         # http://127.0.0.1:8080, local only
-afas-entra-sync -c config.toml serve --read-only             # view only
-afas-entra-sync -c config.toml serve --listen 0.0.0.0:8080 --trusted-proxy 10.0.0.5   # behind Traefik
+afas-entra-sync serve                         # http://127.0.0.1:8080, local only
+afas-entra-sync serve --read-only             # view only
+afas-entra-sync serve --listen 0.0.0.0:8080 --trusted-proxy 10.0.0.5   # behind Traefik
 ```
 
 ### How changes are stored
@@ -231,24 +232,56 @@ Static Linux build: `cargo build --release --target x86_64-unknown-linux-musl`.
 ## Usage
 
 ```
-afas-entra-sync -c config.toml check-config
-afas-entra-sync -c config.toml sync                              # test run (dry-run), sends nothing
-afas-entra-sync -c config.toml sync --dump-payload /tmp/p.json   # test run + inspect the upload data
-afas-entra-sync -c config.toml sync --as-of 2026-12-01           # test run as if it is that date
-afas-entra-sync -c config.toml sync --apply                      # actually upload
-afas-entra-sync -c config.toml check-logs --since-minutes 120    # check provisioning logs
-afas-entra-sync -c config.toml check-tls                         # TLS version, cipher and key exchange per endpoint
-afas-entra-sync -c config.toml serve                             # admin GUI (needs [gui] enabled = true)
-afas-entra-sync -c config.toml gui-enable                        # turn the GUI back on after turning it off in the GUI
-afas-entra-sync -c config.toml report [--employee N] [--since D] [--csv]   # access log of the modules
-afas-entra-sync -c config.toml exception add|list|remove        # time-limited exceptions to the role rules
-sudo afas-entra-sync install [--enable-sync] [flags]             # install / upgrade on this host (see install --help)
-sudo afas-entra-sync uninstall [--purge]                         # remove (keeps config and state unless --purge)
+afas-entra-sync doctor                               # check everything; says how to fix what is wrong
+afas-entra-sync afas-fields                          # fields in the GetConnector and how they are mapped (no personal data)
+afas-entra-sync sync                                 # test run (dry-run), sends nothing
+afas-entra-sync sync --apply                         # actually upload
+afas-entra-sync sync --as-of 2026-12-01              # test run as if it is that date
+afas-entra-sync sync --dump-payload /tmp/p.json      # test run + inspect the upload data
+afas-entra-sync check-config                         # only check the configuration
+afas-entra-sync check-logs --since-minutes 120       # check provisioning logs
+afas-entra-sync check-tls                            # TLS version, cipher and key exchange per endpoint
+afas-entra-sync serve                                # admin GUI (needs [gui] enabled = true)
+afas-entra-sync gui-enable                           # turn the GUI back on after turning it off in the GUI
+afas-entra-sync report [--employee N] [--since D] [--csv]   # access log of the modules
+afas-entra-sync exception add|list|remove            # time-limited exceptions to the role rules
+sudo afas-entra-sync install [--enable-sync] [flags] # install / upgrade on this host (see install --help)
+sudo afas-entra-sync module-setup roles|joiner|leaver [--renew]   # certificate + Entra steps for a module
+sudo afas-entra-sync uninstall [--purge]             # remove (keeps config and state unless --purge)
 ```
 
-The report goes to stdout as JSON and to `<state.dir>/last-report.json`.
-It contains employee numbers and reasons, no names. Files are written with
-permissions 0600 (Linux). Note: `--dump-payload` *does* contain personal data.
+**Which configuration.** No `-c` needed after `install`. The program uses the first of:
+`-c <file>`, the environment variable `AFAS_ENTRA_SYNC_CONFIG`,
+`/etc/afas-entra-sync/config.toml`, `./afas-entra-sync.toml`.
+
+**Which user.** `sync`, `serve`, `gui-enable` and `exception add|remove` refuse to run as
+root when the state directory belongs to the service user, because root-owned files
+would break the next scheduled run. The message shows the right command
+(`sudo -u afas-sync afas-entra-sync ...`). `doctor`, `afas-fields` and the other
+read-only commands work as any user that can read the configuration.
+
+**Output.** In a terminal, `sync` prints a short summary: what would change or changed,
+what needs attention, and the next step. With `--json`, or when the output goes to a file,
+Ansible, Semaphore or systemd, it prints the full report as JSON. The report is always
+written to `<state.dir>/last-report.json` too. It contains employee numbers and reasons,
+no names. Files are written with permissions 0600 (Linux). Note: `--dump-payload` *does*
+contain personal data.
+
+**Certificates.** Every run checks when the certificates of the provisioning app and of
+the enabled modules expire. From 30 days before, the report (and the GUI overview) says
+so under `notices`; in the last 7 days a run that was otherwise fine ends with exit 3, so
+Semaphore or your monitoring shows it. Renew with `sudo afas-entra-sync install
+--renew-cert` or `sudo afas-entra-sync module-setup <module> --renew`, then upload the new
+certificate to the app registration.
+
+**doctor.** Goes through the configuration, secret files, the state directory, AFAS (token,
+GetConnector, every mapped field), the Entra sign-in (with an explanation of the AADSTS
+code when it fails), the permissions of the provisioning app and of each enabled module,
+certificate lifetimes, TLS, the systemd timer and the last run. Each line is ok, a
+warning or a problem, with what to do about it. It changes nothing: it signs in and reads,
+but uploads nothing, creates no sign-in codes and sends no mail. Permissions that can only
+be tested by acting (upload, `Mail.Send`, sign out everywhere) are listed as not verified.
+Also in the GUI under *Run → Run health check*.
 
 ### Exit codes
 
@@ -256,7 +289,7 @@ permissions 0600 (Linux). Note: `--dump-payload` *does* contain personal data.
 | --- | --- |
 | 0 | All OK |
 | 2 | Invalid command line (unknown option or argument) |
-| 3 | Completed, but records need attention (skipped or missing) |
+| 3 | Completed, but something needs attention: skipped or missing records, or a certificate that expires within 7 days |
 | 10 | Configuration error |
 | 11 | Another run is active |
 | 20 | Safety stop: **nothing** uploaded |
@@ -267,6 +300,7 @@ permissions 0600 (Linux). Note: `--dump-payload` *does* contain personal data.
 | 42 | A module failed (sign-in, Graph or webhook); see `modules` in the report |
 | 50 | `check-logs`: provisioning logs contain failures |
 | 60 | `check-tls`: an endpoint does not meet the `[tls]` policy |
+| 61 | `doctor`: at least one check failed (warnings only give 3) |
 
 In Semaphore anything other than 0 is a failed task. That is deliberate:
 someone should see exit 3.

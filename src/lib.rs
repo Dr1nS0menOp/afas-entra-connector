@@ -12,6 +12,7 @@
 
 pub mod afas;
 pub mod config;
+pub mod doctor;
 pub mod entra;
 pub mod error;
 pub mod graph;
@@ -24,4 +25,5 @@ pub mod scim;
 pub mod state;
 pub mod sync;
 pub mod tls;
+pub mod ux;
 pub mod web;
