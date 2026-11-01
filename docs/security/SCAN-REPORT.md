@@ -1,6 +1,7 @@
 # Security scan report
 
-Version 0.9.3, scanned 2026-11-01 on the release commit. Toolchain: rustc 1.97.0 (stable),
+Version 0.9.3, scanned 2026-11-01 on the release commit. Raw output of every scan, with
+SHA-256 checksums: [evidence/2026-11-01](evidence/2026-11-01/MANIFEST.md). Toolchain: rustc 1.97.0 (stable),
 nightly 1.101.0 for fuzzing. Every scan below also runs in CI (`.github/workflows/`), so
 the next result is in the repository's Actions and Security tabs.
 

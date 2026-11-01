@@ -1,0 +1,2 @@
+$ shellcheck -S style install.sh deploy/ansible/checkmk/afas_entra_sync
+(no findings, exit 0)

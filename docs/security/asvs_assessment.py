@@ -3,19 +3,41 @@
 # Copyright 2026 The afas-entra-sync Authors
 """OWASP ASVS 5.0.0 Level 2 self-assessment of afas-entra-sync.
 
-Reads the official requirement list (CSV from github.com/OWASP/ASVS, 5.0/docs_en) and writes
-asvs-5.0-L2.csv with a status and the evidence for every Level 1 and Level 2 requirement.
+The official requirement list is fetched from the OWASP ASVS repository at the
+v5.0.0_release tag and verified by SHA-256 before use. For every Level 1 and Level 2
+requirement this script records a status and the evidence, and writes
+docs/security/asvs-5.0-L2.csv.
 
-    python3 docs/security/asvs_assessment.py <path to OWASP ASVS 5.0.0 en .csv>
+    python3 docs/security/asvs_assessment.py            # regenerate the CSV
+    python3 docs/security/asvs_assessment.py --check    # CI: CSV up to date, evidence resolves
+    python3 docs/security/asvs_assessment.py --source <file.csv>   # offline, same checksum
+
+--check fails when the committed CSV differs from what this script produces, or when any
+evidence or security document points to a file, test or code symbol that does not exist.
 
 Status values:
   Met               the application meets it; evidence points to code, tests or docs
   Met (deployment)  met when deployed as documented; the condition is in the evidence
   N/A               the application has no such feature; the reason is in the evidence
+
+The requirement texts are from the OWASP ASVS, (c) OWASP Foundation, licensed CC BY-SA 4.0
+(https://github.com/OWASP/ASVS); they are reproduced unchanged in the CSV.
 """
 
 import csv
+import glob
+import hashlib
+import io
+import os
+import re
 import sys
+import urllib.request
+
+ASVS_COMMIT = "5cf9b032440be53ce345ab3c130fda46ba1ce7a2"  # tag v5.0.0_release
+ASVS_PATH = "5.0/docs_en/OWASP_Application_Security_Verification_Standard_5.0.0_en.csv"
+ASVS_URL = f"https://raw.githubusercontent.com/OWASP/ASVS/{ASVS_COMMIT}/{ASVS_PATH}"
+ASVS_SHA256 = "98c8fe911b9edb403af8ee05d3ce8201ecac2659e313b053890a62847cdcf680"
+OUT = "docs/security/asvs-5.0-L2.csv"
 
 M, D, NA = "Met", "Met (deployment)", "N/A"
 
@@ -246,10 +268,22 @@ R = {
 }
 
 
-def main(src: str) -> None:
-    rows = [r for r in csv.DictReader(open(src, encoding="utf-8")) if r["L"] in ("1", "2")]
-    out = []
-    missing = []
+def official_list(source: str | None) -> list[dict]:
+    """The official ASVS 5.0.0 requirements, checked against the pinned SHA-256."""
+    if source:
+        data = open(source, "rb").read()
+    else:
+        with urllib.request.urlopen(ASVS_URL, timeout=60) as r:  # noqa: S310 (fixed https URL)
+            data = r.read()
+    digest = hashlib.sha256(data).hexdigest()
+    if digest != ASVS_SHA256:
+        sys.exit(f"ASVS list checksum mismatch: {digest}, expected {ASVS_SHA256}")
+    return list(csv.DictReader(io.StringIO(data.decode("utf-8"))))
+
+
+def assess(official: list[dict]) -> list[dict]:
+    rows = [r for r in official if r["L"] in ("1", "2")]
+    out, missing = [], []
     for r in rows:
         rid, sec = r["req_id"], r["section_id"]
         if rid in R:
@@ -271,23 +305,90 @@ def main(src: str) -> None:
         )
     if missing:
         sys.exit(f"not assessed: {', '.join(missing)}")
-    with open("docs/security/asvs-5.0-L2.csv", "w", newline="", encoding="utf-8") as f:
-        w = csv.DictWriter(f, fieldnames=list(out[0].keys()))
-        w.writeheader()
-        w.writerows(out)
+    extra = sorted(set(R) - {x["req_id"] for x in out})
+    if extra:
+        sys.exit(f"assessed ids that are not Level 1 or 2 requirements: {extra}")
+    return out
+
+
+def render(out: list[dict]) -> str:
+    buf = io.StringIO()
+    w = csv.DictWriter(buf, fieldnames=list(out[0].keys()), lineterminator="\r\n")
+    w.writeheader()
+    w.writerows(out)
+    return buf.getvalue()
+
+
+def _read(pattern: str) -> str:
+    return "".join(open(f, encoding="utf-8").read() for f in sorted(glob.glob(pattern, recursive=True)))
+
+
+def check_references(out: list[dict]) -> list[str]:
+    """Every file, test and code symbol named in the evidence and the security documents
+    must exist."""
+    src = _read("src/**/*.rs")
+    tests = _read("tests/**/*.rs")
+    problems = []
+    path_re = re.compile(
+        r"(?:docs/[\w/.-]+\.(?:md|csv|py)|\b[A-Z][A-Z-]+\.md|src/[\w/]+\.rs|tests/[\w/]+\.rs"
+        r"|fuzz/[\w/.-]+|\.github/[\w/.-]+\.yml|\bdeny\.toml|\.secrets\.baseline)"
+    )
+    for x in out:
+        ev, rid = x["evidence"], x["req_id"]
+        for f in path_re.findall(ev):
+            f = f.rstrip(".")
+            if not (os.path.exists(f) or os.path.exists(os.path.join("docs/security", f))):
+                problems.append(f"{rid}: file {f} does not exist")
+        # "tests/web.rs some_test_name" or "tests/web.rs some_prefix..." (prefix match)
+        for name, dots in re.findall(r"tests/\w+\.rs ([a-z_][a-z0-9_]*)(\.\.\.)?", ev):
+            pat = r"fn " + re.escape(name) + ("" if dots else r"\b")
+            if not re.search(pat, tests):
+                problems.append(f"{rid}: test {name}{dots} does not exist")
+        for name, dots in re.findall(r"graph_client::([a-z_][a-z0-9_]*)(\.\.\.)?", ev):
+            if not re.search(r"fn " + re.escape(name), tests):
+                problems.append(f"{rid}: test {name} does not exist")
+        for mod, item in re.findall(
+            r"\b(web|graph|joiner|leaver|records|settings|model|state|config|http|entra|install|webhook|roles)::(?:[A-Z]\w*::)?(\w+)",
+            ev,
+        ):
+            pat = rf"(?:fn|struct|enum|const|static|trait|type) {re.escape(item)}\b"
+            if not re.search(pat, src):
+                problems.append(f"{rid}: code {mod}::{item} does not exist")
+    # Relative links in the security documents.
+    for md in sorted(glob.glob("docs/security/**/*.md", recursive=True)) + ["SECURITY.md"]:
+        text = open(md, encoding="utf-8").read()
+        for link in re.findall(r"\]\(([^)#:]+)(?:#[^)]*)?\)", text):
+            target = os.path.normpath(os.path.join(os.path.dirname(md), link))
+            if not os.path.exists(target):
+                problems.append(f"{md}: link {link} does not resolve")
+    return problems
+
+
+def main(argv: list[str]) -> None:
+    check = "--check" in argv
+    source = argv[argv.index("--source") + 1] if "--source" in argv else None
+    out = assess(official_list(source))
+    text = render(out)
     from collections import Counter
 
     c = Counter(x["status"] for x in out)
     print(f"{len(out)} requirements: " + ", ".join(f"{k} {v}" for k, v in sorted(c.items())))
-    by = {}
-    for x in out:
-        by.setdefault(x["chapter"], Counter())[x["status"]] += 1
-    for ch, cc in by.items():
-        print(f"  {ch}: " + ", ".join(f"{k} {v}" for k, v in sorted(cc.items())))
-    extra = sorted(set(R) - {x["req_id"] for x in out})
-    if extra:
-        sys.exit(f"assessed ids not in the standard (L1/L2): {extra}")
+    problems = check_references(out)
+    if check:
+        committed = open(OUT, encoding="utf-8", newline="").read() if os.path.exists(OUT) else ""
+        if committed != text:
+            problems.append(f"{OUT} is out of date: run python3 docs/security/asvs_assessment.py")
+        for p in problems:
+            print("FAIL", p)
+        if problems:
+            sys.exit(1)
+        print("evidence: CSV up to date, every reference resolves")
+        return
+    with open(OUT, "w", encoding="utf-8", newline="") as f:
+        f.write(text)
+    for p in problems:
+        print("WARN", p)
 
 
 if __name__ == "__main__":
-    main(sys.argv[1])
+    main(sys.argv[1:])

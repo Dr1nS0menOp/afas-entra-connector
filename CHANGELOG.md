@@ -34,6 +34,10 @@ requirements, none unmet) and prepared for the **OpenSSF Best Practices** badge 
   workflows, shellcheck, a fuzz smoke test, Dependabot; every action pinned to a commit.
   Releases are built by GitHub Actions with a CycloneDX SBOM and signed build provenance
   (`gh attestation verify`).
+- **Verifiable evidence:** raw scan output with checksums in `docs/security/evidence/`;
+  the ASVS assessment is regenerated in CI from the official OWASP list (pinned to the
+  `v5.0.0_release` tag by SHA-256) and the build fails when the CSV is out of date or any
+  evidence points to a file, test or code symbol that does not exist.
 - Fuzzing: `fuzz/` with four cargo-fuzz targets (AFAS response, configuration, small
   parsers, GUI request handler).
 
