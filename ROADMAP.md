@@ -1,7 +1,7 @@
 # Roadmap afas-entra-sync
 
 Recorded 2026-10-31, starting from version 0.1.0 (PoC): employees from one GetConnector,
-a fixed set of attributes, CLI only. Current version: 0.9.1 (plain-language texts; 0.9.0: optional modules: roles and licences, first sign-in code for new hires (joiners), actions for departing employees (leavers), webhook, access log, exceptions).
+a fixed set of attributes, CLI only. Current version: 0.9.2 (bug fixes, see CHANGELOG.md; 0.9.0: optional modules: roles and licences, first sign-in code for new hires (joiners), actions for departing employees (leavers), webhook, access log, exceptions).
 
 Order = proposed build order. Every item ships with tests at the same level as 0.1.0
 (unit, e2e against mocks, property tests, mutation tests).

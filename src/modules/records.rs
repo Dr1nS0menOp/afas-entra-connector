@@ -188,6 +188,32 @@ pub fn add_exception(
     Ok(id)
 }
 
+/// Checks that make an exception useful for this config: the group must be one the role
+/// rules manage, and the employee number must carry this staff category's prefix (the
+/// number as it appears in reports), or it would never match anyone.
+pub fn check_new_exception(
+    cfg: &crate::config::Config,
+    employee_id: &str,
+    group_id: &str,
+) -> Result<(), String> {
+    let in_rules = cfg.roles.as_ref().is_some_and(|r| {
+        r.rules
+            .iter()
+            .any(|x| x.group_id.eq_ignore_ascii_case(group_id.trim()))
+    });
+    if !in_rules {
+        return Err("group is not in the role rules".into());
+    }
+    if let Some(px) = cfg.population.id_prefix.as_deref()
+        && !employee_id.trim().starts_with(px)
+    {
+        return Err(format!(
+            "employee numbers in this staff category start with {px} (use the number as shown in the report)"
+        ));
+    }
+    Ok(())
+}
+
 pub fn remove_exception(dir: &Path, id: &str) -> Result<Exception, String> {
     let mut x = load_exceptions(dir)?;
     let pos = x

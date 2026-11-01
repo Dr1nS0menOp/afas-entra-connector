@@ -304,3 +304,51 @@ fn no_ansi_color_codes_when_not_a_terminal() {
         "ANSI codes in output: {stderr:?}"
     );
 }
+
+#[test]
+fn exception_add_checks_the_group_like_the_gui() {
+    let dir = tempfile::tempdir().unwrap();
+    let p = write_cfg(dir.path(), "http://127.0.0.1:1", "http://127.0.0.1:1");
+    let grp = "a1a1a1a1-0000-0000-0000-000000000001";
+    let mut toml = std::fs::read_to_string(&p).unwrap();
+    toml.push_str(&format!(
+        "\n[roles]\nenabled = false\nclient_id = \"c0000000-0000-0000-0000-000000000001\"\ncertificate_pem = \"/x/cert.pem\"\nprivate_key_pem = \"/x/key.pem\"\ngroup_prefix = \"AFAS-\"\n[[roles.rule]]\ngroup_id = \"{grp}\"\nall = true\n"
+    ));
+    std::fs::write(&p, toml).unwrap();
+    std::fs::create_dir_all(dir.path().join("state")).unwrap();
+    let until = (chrono::Utc::now().date_naive() + chrono::Days::new(5)).to_string();
+    let add = |group: &str| {
+        bin()
+            .env("TEST_AFAS_TOKEN", "x")
+            .args([
+                "-c",
+                p.to_str().unwrap(),
+                "exception",
+                "add",
+                "--employee",
+                "00001",
+                "--group",
+                group,
+                "--kind",
+                "include",
+                "--until",
+                &until,
+                "--reason",
+                "test",
+            ])
+            .output()
+            .unwrap()
+    };
+    let bad = add("a1a1a1a1-0000-0000-0000-00000000ffff");
+    assert_ne!(bad.status.code(), Some(0));
+    assert!(String::from_utf8_lossy(&bad.stderr).contains("not in the role rules"));
+    assert!(!dir.path().join("state/exceptions.json").exists());
+    let ok = add(grp);
+    assert_eq!(
+        ok.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&ok.stderr)
+    );
+    assert!(dir.path().join("state/exceptions.json").exists());
+}

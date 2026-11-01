@@ -95,7 +95,9 @@ in several rules; matching any of them is enough.
 **Who is eligible.** Active employees. New hires before their start date (pre-hires) only
 with `include_prehires = true` (licences cost money from the moment of assignment).
 Departing employees (leavers) keep their groups for `keep_leavers_days` after their end
-date, then they are removed.
+date, then they are removed. `keep_leavers_days` must be smaller than
+`policy.leaver_lookback_days`: after that window a departing employee is no longer in the
+upload, and the module would never see them again to remove them.
 
 **Which groups can be managed.** The module checks every group in the rules before it
 changes anything. If one group fails a check, the roles module changes **nothing** in that
@@ -146,6 +148,10 @@ ahead. After the end date the rules apply again at the next run. Exceptions are 
 `<state.dir>/exceptions.json` and can also be managed on the *Exceptions* page of the GUI.
 Adding and removing is audited.
 
+Exceptions use the employee number as it appears in the report, including the staff
+category prefix (population `id_prefix`), and only groups from the role rules. Both the CLI
+and the GUI check this.
+
 **Job changes (movers).** Someone who changes department loses the old group and gets the
 new one in the same run. Combined with group-based licensing and Conditional Access on
 groups, that covers the whole job change.
@@ -176,7 +182,16 @@ in for the first time and register MFA or a passkey, without a password ever bei
   employees (rehires) get a new one. If the account is not in Entra yet (provisioning still busy), the next run tries
   again, up to three days after the start date.
 - **Mail fails, code removed.** If the mail cannot be sent, the code is deleted again so no
-  unknown code stays valid.
+  unknown code stays valid. If Graph does not answer clearly whether it created the code
+  (network error or server error), the request is not repeated and any code that appeared
+  is removed; the next run tries again.
+- **Never replaced.** An account can have only one code. If the new hire already has a
+  usable or future one (for example from the service desk), the module leaves it, sends
+  nothing and reports it in `notes`; delete it in Entra to have a new one sent. An expired
+  or already used code is removed first.
+- **Never to a manager who has left.** If the manager in AFAS is no longer active, the
+  code goes to `fixed_address` (or is not sent, without one): a departed manager's mailbox
+  may be shared with others by then.
 - **The template.** `subject` and `body` with placeholders `{display_name}`, `{upn}`,
   `{tap}` (the code), `{valid_from}`, `{valid_until}`, `{start_date}`. The body must contain `{tap}`.
 - **Tenant setting.** Turn on the Temporary Access Pass method under *Protection →
@@ -218,7 +233,9 @@ From the day after the end date (and up to `grace_days` later), once per end dat
    An account without a mailbox is not an error.
 
 Removal from groups (and so licences) is done by the roles module, after
-`keep_leavers_days`.
+`keep_leavers_days`. The module needs `policy.leaver_lookback_days` of at least 1, since it
+acts on departing employees that are still in the upload. The automatic reply is shown as
+HTML by Exchange; the tool escapes the text and keeps its line breaks.
 
 To keep `MailboxSettings.ReadWrite` narrower than the whole tenant, you can grant it with
 Exchange RBAC for Applications too (role `Application MailboxSettings.ReadWrite`) with a
@@ -240,7 +257,8 @@ events = ["joiner", "mover", "leaver"]
 ```
 
 Events are found by comparing with the previous applied run. The first run only records a
-baseline and sends nothing.
+baseline and sends nothing. The same happens when the previous comparison is older than 7
+days (for example after the modules were off for a while), so no stale events are sent.
 
 | Event | When |
 | --- | --- |
@@ -296,7 +314,8 @@ Generate one with `openssl rand -hex 32`. The webhook uses the same TLS policy a
 
 ## Access log and reports
 
-Every change a module made, successful or not:
+Every change a module made, successful or not. If the log cannot be written, the module
+reports a failure (exit 42), because the audit trail would be incomplete.
 
 ```
 afas-entra-sync -c config.toml report                       # JSON, everything

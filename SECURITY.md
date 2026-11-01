@@ -1,7 +1,7 @@
 # Security
 
 Security design, hardening and verification of afas-entra-sync and the Ansible deployment
-in `deploy/ansible`. Last reviewed 2026-11-01 (version 0.9.0).
+in `deploy/ansible`. Last reviewed 2026-11-01 (version 0.9.2).
 
 ## What runs where
 
@@ -32,6 +32,7 @@ apply to it.
 | A module changes far too much (wrong rule, broken HR filter) | Every module plans first and changes nothing above its own maximum per run (exit 21); dry-run without `--apply` |
 | One compromised module credential gives everything | Separate app registration and certificate per module; the provisioning app gets no Graph write permissions |
 | Roles module touches privileged or foreign groups | Only groups with the configured prefix; role-assignable, on-prem synced and dynamic groups are refused before anything changes; unknown members left alone by default |
+| A retried request does something twice | A POST (create a pass, send a mail) is never repeated after a network error or 5xx; when the outcome of creating a pass is unknown, any pass that appeared is removed |
 | Temporary Access Pass leaks | Never logged or stored; valid only from the start date for a limited time; deleted again when the mail fails; `Mail.Send` scoped to one sender mailbox with Exchange RBAC for Applications |
 | Forged or replayed webhook calls to your ITSM | HMAC-SHA256 over timestamp and body, secret at least 16 characters from an environment variable or a 0600 file, unique delivery id; receivers check the signature and age |
 | Spreadsheet formula injection through the access log export | CSV cells starting with `=`, `+`, `-`, `@` are prefixed |

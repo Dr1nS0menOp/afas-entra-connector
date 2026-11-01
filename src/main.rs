@@ -366,15 +366,19 @@ fn exception_cmd(cfg: &Config, x: ExceptionCmd) -> i32 {
             } else {
                 ExceptionKind::Exclude
             };
-            add_exception(dir, &employee, &group, k, until, &reason, &who, today).map(|id| {
-                afas_entra_sync::web::audit(
-                    dir,
-                    &format!("cli:{who}"),
-                    "exception added",
-                    &format!("{id}: {kind} {employee} in {group} until {until}: {reason}"),
-                );
-                println!("{id}");
-            })
+            afas_entra_sync::modules::records::check_new_exception(cfg, &employee, &group)
+                .and_then(|()| {
+                    add_exception(dir, &employee, &group, k, until, &reason, &who, today)
+                })
+                .map(|id| {
+                    afas_entra_sync::web::audit(
+                        dir,
+                        &format!("cli:{who}"),
+                        "exception added",
+                        &format!("{id}: {kind} {employee} in {group} until {until}: {reason}"),
+                    );
+                    println!("{id}");
+                })
         }
         ExceptionCmd::List => load_exceptions(dir).map(|x| {
             let rows: Vec<_> = x

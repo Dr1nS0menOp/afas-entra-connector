@@ -25,7 +25,7 @@ Entra. Safe to run again; `sudo afas-entra-sync uninstall` removes it. Ansible u
 [deploy/ansible](deploy/ansible/README.md) instead.
 
 **Documentation:** step-by-step setup and operation in [docs/GUIDE.md](docs/GUIDE.md),
-the optional modules in [docs/MODULES.md](docs/MODULES.md), security in [SECURITY.md](SECURITY.md), Ansible deployment in
+the optional modules in [docs/MODULES.md](docs/MODULES.md), changes in [CHANGELOG.md](CHANGELOG.md), security in [SECURITY.md](SECURITY.md), Ansible deployment in
 [deploy/ansible](deploy/ansible/README.md).
 
 ## Optional modules: new hires, job changes and departing employees
@@ -40,6 +40,15 @@ Each module is off until configured, signs in with its own app registration, pla
 | Departing employees (leavers) | Sign out on every device and set an automatic reply after the end date |
 | Webhook | Signed events for new hires, job changes and departing employees (joiner/mover/leaver) (HMAC-SHA256) for an ITSM tool or Power Automate, with retries |
 | Access log | Who got or lost which access, when and through which module; JSON or CSV export |
+
+## Screenshots
+
+The optional admin GUI (off by default, local or behind your SSO proxy). Demo data.
+
+| | |
+| --- | --- |
+| ![Overview of a run](docs/images/overview.png) | ![Modules](docs/images/modules.png) |
+| ![New hires settings](docs/images/new-hires.png) | ![Access log](docs/images/access-log.png) |
 
 ## Words used
 

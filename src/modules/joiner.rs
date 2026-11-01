@@ -79,8 +79,12 @@ pub fn plan(
         let manager_mail = || -> Option<String> {
             let m = s.manager_id.as_deref()?;
             let mp = by_emp.get(m)?;
+            // Never to a manager who has left: that mailbox may be shared with others by now.
+            if !mp.snap.active {
+                return None;
+            }
             mp.snap.email.clone().or_else(|| match found.get(m) {
-                Some(Found::User(mu)) => mu.mail.clone(),
+                Some(Found::User(mu)) if mu.enabled => mu.mail.clone(),
                 _ => None,
             })
         };
@@ -107,6 +111,39 @@ pub fn plan(
     (items, notes)
 }
 
+/// Error code for "the user already has a pass" (a note, not a failure).
+pub const EXISTING_PASS: &str = "ExistingTemporaryAccessPass";
+
+/// Start of validity in UTC: `hour` local time on `date`. When that hour does not exist
+/// (clocks move forward), the first existing hour after it; when it exists twice, the
+/// first. Never earlier than asked.
+pub fn valid_from_utc(
+    tz: chrono_tz::Tz,
+    date: NaiveDate,
+    hour: u32,
+) -> Option<chrono::DateTime<chrono::Utc>> {
+    (hour..=23).chain(std::iter::once(24)).find_map(|h| {
+        let local = if h == 24 {
+            date.succ_opt()?.and_hms_opt(0, 0, 0)?
+        } else {
+            date.and_hms_opt(h, 0, 0)?
+        };
+        tz.from_local_datetime(&local)
+            .earliest()
+            .map(|d| d.with_timezone(&chrono::Utc))
+    })
+}
+
+fn remove_all_passes(g: &Graph<'_>, taps: &str) {
+    if let Ok(list) = g.get_all(taps) {
+        for m in list {
+            if let Some(Ok(mid)) = m["id"].as_str().map(seg) {
+                let _ = g.call(Method::DELETE, &format!("{taps}/{mid}"), None);
+            }
+        }
+    }
+}
+
 pub fn render(t: &str, it: &TapItem, tap: &str, from: &str, until: &str) -> String {
     t.replace("{display_name}", &it.display_name)
         .replace("{upn}", &it.upn)
@@ -117,7 +154,7 @@ pub fn render(t: &str, it: &TapItem, tap: &str, from: &str, until: &str) -> Stri
 }
 
 /// Mailbox address as a URL path segment.
-fn mailbox(addr: &str) -> GResult<&str> {
+pub fn mailbox(addr: &str) -> GResult<&str> {
     if super::settings::is_email(addr) && !addr.contains(['/', '?', '#', '%', '\\']) {
         Ok(addr)
     } else {
@@ -131,13 +168,21 @@ fn mailbox(addr: &str) -> GResult<&str> {
 
 fn issue(g: &Graph<'_>, ctx: &Ctx<'_>, cfg: &JoinerConfig, it: &TapItem) -> GResult<()> {
     let tz = ctx.cfg.tz();
-    let start_local = it
-        .start_date
-        .and_hms_opt(cfg.start_hour, 0, 0)
-        .and_then(|d| tz.from_local_datetime(&d).earliest())
-        .map(|d| d.with_timezone(&chrono::Utc));
+    let start_local =
+        valid_from_utc(tz, it.start_date, cfg.start_hour).ok_or_else(|| GraphError {
+            status: None,
+            code: String::new(),
+            message: format!(
+                "no valid start time for {} {}:00",
+                it.start_date, cfg.start_hour
+            ),
+        })?;
     let now_utc = chrono::Utc::now();
-    let valid_from = start_local.filter(|s| *s > now_utc).unwrap_or(now_utc);
+    let valid_from = if start_local > now_utc {
+        start_local
+    } else {
+        now_utc
+    };
     let mut body = json!({
         "lifetimeInMinutes": cfg.lifetime_minutes,
         "isUsableOnce": cfg.usable_once,
@@ -146,14 +191,44 @@ fn issue(g: &Graph<'_>, ctx: &Ctx<'_>, cfg: &JoinerConfig, it: &TapItem) -> GRes
         body["startDateTime"] =
             json!(valid_from.to_rfc3339_opts(chrono::SecondsFormat::Secs, true));
     }
-    let (_, v) = g.call(
-        Method::POST,
-        &format!(
-            "users/{}/authentication/temporaryAccessPassMethods",
-            seg(&it.user_id)?
-        ),
-        Some(&body),
-    )?;
+    let taps = format!(
+        "users/{}/authentication/temporaryAccessPassMethods",
+        seg(&it.user_id)?
+    );
+    // A user can have only one pass. An expired or used one is of no use to anyone and
+    // is removed (e.g. from an earlier employment). A usable or future one was made by
+    // someone else (service desk) or by an earlier attempt: never replace it silently.
+    let mut existing = Vec::new();
+    for m in g.get_all(&taps)? {
+        let spent = m["isUsable"] == json!(false)
+            && matches!(
+                m["methodUsabilityReason"].as_str(),
+                Some("Expired" | "OneTimeUsed")
+            );
+        match (spent, m["id"].as_str().map(seg)) {
+            (true, Some(Ok(mid))) => {
+                g.call(Method::DELETE, &format!("{taps}/{mid}"), None)?;
+            }
+            _ => existing.push(m),
+        }
+    }
+    if !existing.is_empty() {
+        return Err(GraphError {
+            status: None,
+            code: EXISTING_PASS.into(),
+            message: "already has a Temporary Access Pass; not replaced (delete it in Entra to have a new one sent)".into(),
+        });
+    }
+    let (_, v) = match g.call(Method::POST, &taps, Some(&body)) {
+        Ok(x) => x,
+        Err(e) => {
+            if e.outcome_unknown() {
+                // Graph may have created it anyway; nobody knows that pass, so remove it.
+                remove_all_passes(g, &taps);
+            }
+            return Err(e);
+        }
+    };
     let tap = v["temporaryAccessPass"].as_str().unwrap_or("").to_string();
     let method_id = v["id"].as_str().unwrap_or("").to_string();
     if tap.is_empty() {
@@ -236,7 +311,13 @@ pub fn run(ctx: &Ctx<'_>, cfg: &JoinerConfig, state: &mut ModuleState) -> Module
         } else if ctx.apply {
             for it in &items {
                 let r = issue(g, ctx, cfg, it);
-                let _ = append_access(
+                if let Err(e) = &r
+                    && e.code == EXISTING_PASS
+                {
+                    rep.notes.push(format!("{}: {}", it.employee_id, e.message));
+                    continue;
+                }
+                let logged = append_access(
                     ctx.state_dir,
                     &AccessEntry {
                         utc: now(),
@@ -250,6 +331,7 @@ pub fn run(ctx: &Ctx<'_>, cfg: &JoinerConfig, state: &mut ModuleState) -> Module
                         actor: ctx.actor.into(),
                     },
                 );
+                super::note_log_failure(&mut rep, logged);
                 match r {
                     Ok(()) => {
                         state

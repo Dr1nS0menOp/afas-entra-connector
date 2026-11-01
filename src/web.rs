@@ -679,7 +679,7 @@ static SECTIONS: &[Section] = &[
             f(
                 "roles.keep_leavers_days",
                 "Keep departing employees in groups (days)",
-                "Days after the end date before groups and licences are removed, e.g. to keep a mailbox while it is converted.",
+                "Days after the end date before groups and licences are removed, e.g. to keep a mailbox while it is converted. Must be smaller than the days to keep sending departing employees (Safety and windows).",
                 Kind::Int { min: 0, max: 365 },
             ),
             f(
@@ -2312,15 +2312,8 @@ fn post_exception_add(app: &App, l: &Layers, form: &[(String, String)], user: &s
         .date_naive();
     let g = |k: &str| form_get(form, k).unwrap_or("").trim().to_string();
     let group = g("group");
-    let in_rules = l.config.roles.as_ref().is_some_and(|r| {
-        r.rules
-            .iter()
-            .any(|x| x.group_id.eq_ignore_ascii_case(&group))
-    });
     let res = (|| {
-        if !in_rules {
-            return Err("group is not in the role rules".to_string());
-        }
+        crate::modules::records::check_new_exception(&l.config, &g("employee"), &group)?;
         let kind = match g("kind").as_str() {
             "include" => ExceptionKind::Include,
             "exclude" => ExceptionKind::Exclude,
