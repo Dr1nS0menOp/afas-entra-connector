@@ -1,7 +1,7 @@
 # Security
 
 Security design, hardening and verification of afas-entra-sync and the Ansible deployment
-in `deploy/ansible`. Last reviewed 2026-11-01 (version 0.9.2).
+in `deploy/ansible`. Last reviewed 2026-11-01 (version 0.9.3).
 
 ## What runs where
 
@@ -165,9 +165,31 @@ sign-in and audit logs.
 - Whether ML-KEM in Schannel works through your firewall's TLS inspection.
 - The exact Graph permissions the AFAS group integration requests.
 
+## Updating dependencies
+
+Known vulnerabilities in dependencies are found by `cargo deny` and `cargo audit` on every
+push and pull request, and by Dependabot weekly. Remediation times from the moment an
+advisory affects a released version:
+
+| Severity (CVSS) | Fixed release within |
+| --- | --- |
+| Critical (9.0+) | 7 days |
+| High (7.0–8.9) | 14 days |
+| Medium (4.0–6.9) | 30 days |
+| Low | next regular release |
+
+Other dependency updates go in with the next release; nothing older than one year without
+a reason. A release never ships with a known vulnerability of medium or higher severity.
+
+## Standards
+
+The application is self-assessed against OWASP ASVS 5.0 Level 2 and the project against
+the OpenSSF Best Practices criteria. Evidence and how to verify it: `docs/security/`.
+
 ## Reporting a vulnerability
 
 Please do not open a public issue. Use the repository's private vulnerability reporting
-(GitHub: *Security → Report a vulnerability*). Include the version, what you did, and what
-happened. You will get a response within 7 days; fixes are released as a new version with
-a note in the release notes.
+(GitHub: *Security → Report a vulnerability*); the report stays private between you and
+the maintainers until a fix is released. Include the version, what you did, and what
+happened. You will get a response within 7 days; fixes are released as a new version, and
+the release notes name every fixed vulnerability with its CVE or GitHub advisory id.

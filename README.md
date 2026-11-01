@@ -1,6 +1,7 @@
 # afas-entra-sync
 
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![OWASP ASVS 5.0 Level 2 (self-assessed)](https://img.shields.io/badge/OWASP%20ASVS%205.0-Level%202%20self--assessed-blue)](docs/security/README.md)
 
 Fetches employees from an AFAS Profit GetConnector and delivers them to
 **Microsoft Entra API-driven inbound provisioning** (`/bulkUpload`). The
@@ -25,7 +26,8 @@ Entra. Safe to run again; `sudo afas-entra-sync uninstall` removes it. Ansible u
 [deploy/ansible](deploy/ansible/README.md) instead.
 
 **Documentation:** step-by-step setup and operation in [docs/GUIDE.md](docs/GUIDE.md),
-the optional modules in [docs/MODULES.md](docs/MODULES.md), changes in [CHANGELOG.md](CHANGELOG.md), security in [SECURITY.md](SECURITY.md), Ansible deployment in
+the optional modules in [docs/MODULES.md](docs/MODULES.md), changes in [CHANGELOG.md](CHANGELOG.md), security in [SECURITY.md](SECURITY.md)
+and [docs/security](docs/security/README.md) (OWASP ASVS 5.0 Level 2 self-assessment, OpenSSF), Ansible deployment in
 [deploy/ansible](deploy/ansible/README.md).
 
 ## Optional modules: new hires, job changes and departing employees

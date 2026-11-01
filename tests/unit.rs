@@ -91,6 +91,11 @@ fn date_formats_rejected() {
         "1800-01-01",
         "2024-01-3é",
         "é",
+        // Found by fuzzing: non-ASCII inside the time part used to panic.
+        "2024-01-01T00:00:0€",
+        "2024-01-01T€0:00:00",
+        "2024-01-01T00:00:00€",
+        "2024-01-01 0€:00:00",
     ] {
         assert!(
             parse_afas_date(s).is_err(),

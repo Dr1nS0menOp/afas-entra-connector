@@ -1,0 +1,64 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build, SBOM and provenance
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write # create the GitHub release and upload its files
+      id-token: write # sign the build provenance (Sigstore, keyless)
+      attestations: write # store the provenance attestation
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --target x86_64-unknown-linux-musl
+          rustup default stable
+          sudo apt-get install -y --no-install-recommends musl-tools
+          cargo install --locked cargo-cyclonedx@0.5.7
+      - name: Test before release
+        run: cargo test --locked
+      - name: Build static binary
+        run: cargo build --release --locked --target x86_64-unknown-linux-musl
+      - name: Package
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          v="${TAG#v}"
+          d="afas-entra-sync-$v-linux-x86_64"
+          mkdir -p "dist/$d/docs"
+          cp target/x86_64-unknown-linux-musl/release/afas-entra-sync "dist/$d/afas-entra-sync-linux-x86_64"
+          cp LICENSE NOTICE README.md CHANGELOG.md SECURITY.md THIRD-PARTY-LICENSES.txt afas-entra-sync.example.toml install.sh "dist/$d/"
+          cp docs/GUIDE.md docs/MODULES.md "dist/$d/docs/"
+          (cd "dist/$d" && sha256sum afas-entra-sync-linux-x86_64 > afas-entra-sync-linux-x86_64.sha256)
+          cargo cyclonedx --format json --override-filename "afas-entra-sync-$v.cdx"
+          mv "afas-entra-sync-$v.cdx.json" dist/
+          (cd dist && tar czf "$d.tar.gz" "$d" && sha256sum "$d.tar.gz" "afas-entra-sync-$v.cdx.json" > SHA256SUMS)
+      - name: Build provenance (SLSA, signed by GitHub)
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            dist/*.tar.gz
+            dist/*.cdx.json
+            dist/*/afas-entra-sync-linux-x86_64
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          gh release create "$TAG" --verify-tag --title "$TAG" --notes "See CHANGELOG.md. Verify: gh attestation verify <file> --repo $REPO" \
+            dist/*.tar.gz dist/*.cdx.json dist/SHA256SUMS

@@ -332,12 +332,12 @@ pub fn parse_afas_date(s: &str) -> Result<NaiveDate, String> {
     }
     if !rest.is_empty() {
         let t = &rest[1..];
-        let ok = t.len() >= 8
-            && t.as_bytes()[2] == b':'
-            && t.as_bytes()[5] == b':'
-            && t[..2].bytes().all(|b| b.is_ascii_digit())
-            && t[3..5].bytes().all(|b| b.is_ascii_digit())
-            && t[6..8].bytes().all(|b| b.is_ascii_digit());
+        // Checked on bytes, and only ASCII: slicing text at a byte position inside a
+        // multi-byte character would panic (found by fuzzing).
+        let b = t.as_bytes();
+        let ok = b.len() >= 8
+            && matches!(b[..8], [h1, h2, b':', m1, m2, b':', s1, s2]
+                if [h1, h2, m1, m2, s1, s2].iter().all(u8::is_ascii_digit));
         if !ok {
             return Err(format!("'{s}' has an invalid time part"));
         }

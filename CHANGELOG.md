@@ -3,6 +3,40 @@
 All notable changes. Versions follow [Semantic Versioning](https://semver.org/); before
 1.0 a minor version may change configuration.
 
+## 0.9.3 – 2026-11-01
+
+Security assurance: self-assessed against **OWASP ASVS 5.0 Level 2** (all 253 Level 1 and 2
+requirements, none unmet) and prepared for the **OpenSSF Best Practices** badge and
+**Scorecard**. Evidence in `docs/security/`.
+
+- **Fix (found by fuzzing):** an AFAS date with a non-ASCII character in its time part
+  (e.g. `2024-01-01T00:00:0€`) crashed the whole run. It is now an ordinary data error
+  for that one record.
+- **GUI sign-in and sessions** (ASVS V3, V6, V7, V14, V16):
+  - every sign-in gets its own random session; sessions end after 30 minutes without
+    activity and after 8 hours; at most 20 at once;
+  - the login link works once and expires after 15 minutes; a new one replaces it in
+    `gui-login-url`;
+  - cookie `__Host-afas_gui_session` with `Secure`, `HttpOnly`, `SameSite=Strict`;
+  - "Sign out" on every page and "Sign out all sessions" on the GUI page, with
+    `Clear-Site-Data`;
+  - sign-in, refused sign-in, refused session, refused form token and sign-out are written
+    to `audit.log`;
+  - `Strict-Transport-Security` header; JSON downloads declare their charset.
+- **No own cryptography:** the webhook HMAC now comes from AWS-LC (the library rustls
+  already uses) instead of an own implementation.
+- **No panics in production code:** `unwrap`, `expect` and `panic!` are denied by the
+  compiler outside tests.
+- The installer copies `/proc/self/exe`, the program that is actually running.
+- Module certificates in the docs are valid for 365 days (was 730), in line with SECURITY.md.
+- **Supply chain and CI:** `deny.toml` (RustSec, licences, crates.io only), CodeQL (Rust
+  and Actions), OpenSSF Scorecard, secret scanning with a reviewed baseline, zizmor for
+  workflows, shellcheck, a fuzz smoke test, Dependabot; every action pinned to a commit.
+  Releases are built by GitHub Actions with a CycloneDX SBOM and signed build provenance
+  (`gh attestation verify`).
+- Fuzzing: `fuzz/` with four cargo-fuzz targets (AFAS response, configuration, small
+  parsers, GUI request handler).
+
 ## 0.9.2 – 2026-11-01
 
 Bug fixes from a review of the modules. No configuration changes are needed, but see the

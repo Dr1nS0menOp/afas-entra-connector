@@ -1,0 +1,52 @@
+[package]
+name = "afas-entra-sync-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+license = "Apache-2.0"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+afas-entra-sync = { path = ".." }
+serde_json = "1"
+toml = "1"
+reqwest = { version = "0.13.5", default-features = false }
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+
+# Not part of the main workspace: built with `cargo +nightly fuzz`.
+[workspace]
+members = ["."]
+
+[profile.release]
+debug = 1
+
+[[bin]]
+name = "afas_response"
+path = "fuzz_targets/afas_response.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "config"
+path = "fuzz_targets/config.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "small_parsers"
+path = "fuzz_targets/small_parsers.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "gui_request"
+path = "fuzz_targets/gui_request.rs"
+test = false
+doc = false
+bench = false

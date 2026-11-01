@@ -19,13 +19,14 @@ use crate::state::{REPORT_FILE, write_atomic};
 use crate::sync::{RunOptions, run};
 use chrono::NaiveDate;
 use serde_json::Value;
+use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::io::Read;
 use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 pub const AUDIT_FILE: &str = "audit.log";
 pub const PAYLOAD_FILE: &str = "payload.json";
@@ -96,11 +97,19 @@ pub type Sleep = Arc<dyn Fn(Duration) + Send + Sync>;
 pub struct App {
     pub opts: WebOptions,
     pub csrf: String,
-    /// Local mode only (no trusted proxy): secret in the login link that `serve` writes to
-    /// `<state.dir>/gui-login-url`. Opening that link sets the session cookie.
-    pub login_token: String,
-    /// Value of the session cookie in local mode.
-    pub session: String,
+    /// Local mode only (no trusted proxy): the one-time login link that `serve` writes
+    /// to `<state.dir>/gui-login-url`. Single use, valid for `login_ttl`.
+    login: Mutex<LoginLink>,
+    /// Where the login link is written (set by `serve`); rewritten when it changes.
+    login_file: Mutex<Option<PathBuf>>,
+    /// Local mode: active sessions by their random id.
+    sessions: Mutex<HashMap<String, Session>>,
+    /// Sign in again after this much inactivity.
+    pub idle_timeout: Duration,
+    /// Sign in again after this long, whatever the activity.
+    pub max_lifetime: Duration,
+    /// A login link expires after this long.
+    pub login_ttl: Duration,
     pub sleep: Sleep,
     /// For tests: no system proxy for runs.
     pub use_system_proxy: bool,
@@ -123,8 +132,12 @@ impl App {
         Ok(App {
             opts,
             csrf: random_hex()?,
-            login_token: random_hex()?,
-            session: random_hex()?,
+            login: Mutex::new(LoginLink::new()?),
+            login_file: Mutex::default(),
+            sessions: Mutex::default(),
+            idle_timeout: IDLE_TIMEOUT,
+            max_lifetime: MAX_LIFETIME,
+            login_ttl: LOGIN_TTL,
             sleep: Arc::new(std::thread::sleep),
             use_system_proxy: true,
             runs: Arc::default(),
@@ -132,6 +145,138 @@ impl App {
             run_inline: false,
         })
     }
+}
+
+impl App {
+    /// The current login link token (what `serve` writes to the login file).
+    pub fn login_token(&self) -> String {
+        lock(&self.login).token.clone()
+    }
+
+    /// Starts a session and returns its id (the cookie value).
+    pub fn new_session(&self) -> Result<String, String> {
+        let id = random_hex()?;
+        let now = Instant::now();
+        let mut s = lock(&self.sessions);
+        s.retain(|_, x| !x.expired(now, self.idle_timeout, self.max_lifetime));
+        while s.len() >= MAX_SESSIONS {
+            let oldest = s
+                .iter()
+                .min_by_key(|(_, x)| x.created)
+                .map(|(k, _)| k.clone());
+            match oldest {
+                Some(k) => s.remove(&k),
+                None => break,
+            };
+        }
+        s.insert(
+            id.clone(),
+            Session {
+                created: now,
+                seen: now,
+            },
+        );
+        Ok(id)
+    }
+
+    /// Valid session: refreshes its activity. Expired or unknown: `Err` with the reason.
+    fn touch_session(&self, id: &str) -> Result<(), &'static str> {
+        let now = Instant::now();
+        let mut s = lock(&self.sessions);
+        let key = s.keys().find(|k| ct_eq(k, id)).cloned();
+        let Some(key) = key else {
+            return Err("unknown session");
+        };
+        let expired = s
+            .get(&key)
+            .is_none_or(|x| x.expired(now, self.idle_timeout, self.max_lifetime));
+        if expired {
+            s.remove(&key);
+            return Err("session expired");
+        }
+        if let Some(x) = s.get_mut(&key) {
+            x.seen = now;
+        }
+        Ok(())
+    }
+
+    /// Ends every session (the GUI's "Sign out all sessions").
+    pub fn end_all_sessions(&self) {
+        lock(&self.sessions).clear();
+    }
+
+    fn end_session(&self, id: &str) {
+        let mut s = lock(&self.sessions);
+        let key = s.keys().find(|k| ct_eq(k, id)).cloned();
+        if let Some(k) = key {
+            s.remove(&k);
+        }
+    }
+
+    /// Number of active sessions (for tests and the GUI page).
+    pub fn session_count(&self) -> usize {
+        let now = Instant::now();
+        lock(&self.sessions)
+            .values()
+            .filter(|x| !x.expired(now, self.idle_timeout, self.max_lifetime))
+            .count()
+    }
+
+    /// Replaces the login link and writes it to the login file (if `serve` set one).
+    fn rotate_login(&self) {
+        let Ok(fresh) = LoginLink::new() else {
+            return;
+        };
+        let token = fresh.token.clone();
+        *lock(&self.login) = fresh;
+        if let Some(f) = lock(&self.login_file).as_ref() {
+            let url = format!("http://{}/login?token={token}\n", self.opts.listen);
+            if let Err(e) = write_atomic(f, url.as_bytes()) {
+                tracing::error!("writing the login link failed: {e}");
+            }
+        }
+    }
+}
+
+/// Sign in again after 30 minutes without activity.
+pub const IDLE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+/// And after 8 hours in any case.
+pub const MAX_LIFETIME: Duration = Duration::from_secs(8 * 60 * 60);
+/// A login link is valid for 15 minutes and for one sign-in.
+pub const LOGIN_TTL: Duration = Duration::from_secs(15 * 60);
+/// At most this many sessions at once; the oldest is ended first.
+pub const MAX_SESSIONS: usize = 20;
+
+struct Session {
+    created: Instant,
+    seen: Instant,
+}
+
+impl Session {
+    fn expired(&self, now: Instant, idle: Duration, max: Duration) -> bool {
+        now.duration_since(self.seen) >= idle || now.duration_since(self.created) >= max
+    }
+}
+
+struct LoginLink {
+    token: String,
+    issued: Instant,
+    used: bool,
+}
+
+impl LoginLink {
+    fn new() -> Result<Self, String> {
+        Ok(LoginLink {
+            token: random_hex()?,
+            issued: Instant::now(),
+            used: false,
+        })
+    }
+}
+
+/// A poisoned lock only means another request panicked; the data is still usable.
+fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// 256 bits from the operating system's random source, as hex.
@@ -153,7 +298,8 @@ pub fn ct_eq(a: &str, b: &str) -> bool {
     a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
-pub const SESSION_COOKIE: &str = "afas_gui_session";
+/// `__Host-`: only set by this exact host, over a secure context, for path `/`.
+pub const SESSION_COOKIE: &str = "__Host-afas_gui_session";
 pub const LOGIN_FILE: &str = "gui-login-url";
 
 fn cookie<'a>(r: &'a Request<'_>, name: &str) -> Option<&'a str> {
@@ -180,28 +326,75 @@ fn local_access(app: &App, r: &Request<'_>, path: &str, query: &str) -> Option<R
     if !host_ok {
         return Some(text(421, "Unexpected Host header."));
     }
+    let from = r
+        .remote
+        .map_or_else(|| "?".to_string(), |ip| ip.to_string());
     if path == "/login" {
         let token = query
             .split('&')
             .find_map(|kv| kv.strip_prefix("token="))
             .unwrap_or("");
-        if !ct_eq(token, &app.login_token) {
-            return Some(text(403, "Invalid login link."));
+        // Check and consume under one lock: a link works exactly once.
+        let verdict = {
+            let mut l = lock(&app.login);
+            if l.used || l.issued.elapsed() >= app.login_ttl {
+                Err("expired or already used")
+            } else if ct_eq(token, &l.token) {
+                l.used = true;
+                Ok(())
+            } else {
+                Err("wrong token")
+            }
+        };
+        return Some(match verdict {
+            Ok(()) => {
+                app.rotate_login();
+                match app.new_session() {
+                    Ok(id) => {
+                        audit_local(app, "local", "login", &format!("from {from}"));
+                        let mut resp = redirect("/");
+                        resp.set_cookie = Some(format!(
+                            "{SESSION_COOKIE}={id}; Secure; HttpOnly; SameSite=Strict; Path=/"
+                        ));
+                        resp
+                    }
+                    Err(e) => text(500, &e),
+                }
+            }
+            Err(why) => {
+                if why != "wrong token" {
+                    app.rotate_login();
+                }
+                audit_local(app, "-", "login refused", &format!("{why}, from {from}"));
+                text(
+                    403,
+                    "Invalid or expired login link. A new link is in the file gui-login-url in the state directory.",
+                )
+            }
+        });
+    }
+    match cookie(r, SESSION_COOKIE).map(|c| (c, app.touch_session(c))) {
+        Some((_, Ok(()))) => None,
+        Some((_, Err(why))) => {
+            audit_local(app, "-", "access refused", &format!("{why}, from {from}"));
+            Some(text(
+                401,
+                "Your session has ended. Open the login link from the file gui-login-url in the state directory again.",
+            ))
         }
-        let mut resp = redirect("/");
-        resp.set_cookie = Some(format!(
-            "{SESSION_COOKIE}={}; HttpOnly; SameSite=Strict; Path=/",
-            app.session
-        ));
-        return Some(resp);
+        None => Some(text(
+            401,
+            "Not signed in. Open the login link from the file gui-login-url in the state directory (readable by the service user only).",
+        )),
     }
-    if cookie(r, SESSION_COOKIE).is_some_and(|c| ct_eq(c, &app.session)) {
-        return None;
+}
+
+/// Audit entry outside a request that has loaded the config (sign-in events).
+fn audit_local(app: &App, user: &str, action: &str, detail: &str) {
+    match Config::load(&app.opts.config_path) {
+        Ok(c) => audit(&c.state.dir, user, action, detail),
+        Err(e) => tracing::error!("audit ({action}): configuration unreadable: {e}"),
     }
-    Some(text(
-        401,
-        "Not signed in. Open the login link from the file gui-login-url in the state directory (readable by the service user only).",
-    ))
 }
 
 /// Non-loopback only with a trusted proxy: then nobody else can forge the
@@ -845,7 +1038,10 @@ fn set_path(t: &mut toml::Table, path: &str, v: toml::Value) {
         if !entry.is_table() {
             *entry = toml::Value::Table(toml::Table::new());
         }
-        tab = entry.as_table_mut().expect("just created a table");
+        let toml::Value::Table(next) = entry else {
+            return; // unreachable: made a table just above
+        };
+        tab = next;
     }
     tab.insert(parts[parts.len() - 1].to_string(), v);
 }
@@ -909,6 +1105,30 @@ pub fn handle(app: &App, r: &Request<'_>) -> Response {
     }
 
     if r.method == "POST" {
+        if path == "/logout" {
+            let form = parse_form(r.body);
+            if form_get(&form, "csrf") != Some(app.csrf.as_str()) {
+                audit(&layers.config.state.dir, &user, "form token refused", path);
+                return text(403, "Form expired. Reload the page and try again.");
+            }
+            let all = form_get(&form, "all") == Some("1");
+            if all {
+                app.end_all_sessions();
+            } else if let Some(c) = cookie(r, SESSION_COOKIE) {
+                app.end_session(c);
+            }
+            audit(
+                &layers.config.state.dir,
+                &user,
+                "logout",
+                if all { "all sessions" } else { "" },
+            );
+            let mut resp = text(200, "Signed out. You can close this window.");
+            resp.set_cookie = Some(format!(
+                "{SESSION_COOKIE}=; Secure; HttpOnly; SameSite=Strict; Path=/; Max-Age=0"
+            ));
+            return resp;
+        }
         if app.opts.read_only {
             return text(403, "The GUI is in read-only mode.");
         }
@@ -917,6 +1137,7 @@ pub fn handle(app: &App, r: &Request<'_>) -> Response {
         }
         let form = parse_form(r.body);
         if form_get(&form, "csrf") != Some(app.csrf.as_str()) {
+            audit(&layers.config.state.dir, &user, "form token refused", path);
             return text(403, "Form expired. Reload the page and try again.");
         }
         return match path {
@@ -1473,7 +1694,7 @@ fn get_payload(l: &Layers, user: &str) -> Response {
             audit(&l.config.state.dir, user, "payload downloaded", "");
             Response {
                 status: 200,
-                content_type: "application/json",
+                content_type: "application/json; charset=utf-8",
                 location: None,
                 disposition: Some("attachment; filename=\"payload.json\"".into()),
                 set_cookie: None,
@@ -1918,6 +2139,18 @@ fn page_gui(app: &App, l: &Layers) -> String {
             .display()
             .to_string()),
     );
+    if app.opts.trusted_proxy.is_none() {
+        let _ = write!(
+            b,
+            "<section class=action><div><h2>Sessions</h2><p>{} active. A session ends after {} minutes without activity and after {} hours in any case; a login link works once, for {} minutes.</p></div>\
+<form method=post action=/logout><input type=hidden name=csrf value={}><input type=hidden name=all value=1><button class=quiet>Sign out all sessions</button></form></section>",
+            app.session_count(),
+            app.idle_timeout.as_secs() / 60,
+            app.max_lifetime.as_secs() / 3600,
+            app.login_ttl.as_secs() / 60,
+            app.csrf
+        );
+    }
     if !app.opts.read_only {
         let _ = write!(
             b,
@@ -2398,6 +2631,7 @@ nav.side{background:var(--surface);border-right:1px solid var(--line);padding:28
 nav.side ul{list-style:none;margin:0 0 20px;padding:0}nav.side li a{display:block;padding:7px 10px;margin:1px -10px;border-radius:6px;color:var(--ink);text-decoration:none}
 nav.side li a:hover{background:var(--bg)}nav.side li a[aria-current]{background:var(--accent);color:var(--accent-ink);font-weight:600}
 nav.side .group{color:var(--muted);font-size:13px;margin:18px 0 4px}
+nav.side .signout{margin-top:8px}nav.side .signout button{width:100%}
 main{padding:40px clamp(16px,5vw,64px) 80px;max-width:920px}
 h1{font-size:34px;line-height:1.15;font-weight:600;letter-spacing:-.02em;margin:0 0 20px}
 h2{font-size:20px;font-weight:600;margin:0 0 8px;letter-spacing:-.01em}
@@ -2481,10 +2715,20 @@ fn layout(app: &App, l: &Layers, active: &str, title: &str, body: &str) -> Strin
     } else {
         ""
     };
+    // Local mode signs in with a link; signing out ends that session. Behind the proxy
+    // the identity provider owns the session.
+    let signout = if app.opts.trusted_proxy.is_none() {
+        format!(
+            "<form method=post action=/logout class=signout><input type=hidden name=csrf value={}><button class=quiet>Sign out</button></form>",
+            app.csrf
+        )
+    } else {
+        String::new()
+    };
     format!(
         "<!doctype html><html lang=en><head><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\">\
 <title>{t} | AFAS to Entra</title><style>{CSS}</style></head><body><div class=shell>\
-<nav class=side aria-label=\"Main menu\"><p class=brand>AFAS to Entra</p><p class=pop>Staff category: {pop}</p>{nav}{ro}</nav>\
+<nav class=side aria-label=\"Main menu\"><p class=brand>AFAS to Entra</p><p class=pop>Staff category: {pop}</p>{nav}{ro}{signout}</nav>\
 <main><h1>{t}</h1>{body}</main></div></body></html>",
         t = esc(title),
         pop = esc(pop),
@@ -2644,9 +2888,11 @@ pub fn serve(app: App) -> Result<(), String> {
             .state
             .dir;
         let file = dir.join(LOGIN_FILE);
+        *lock(&app.login_file) = Some(file.clone());
         let url = format!(
             "http://{}/login?token={}\n",
-            app.opts.listen, app.login_token
+            app.opts.listen,
+            app.login_token()
         );
         write_atomic(&file, url.as_bytes()).map_err(|e| e.to_string())?;
         tracing::info!(
@@ -2711,7 +2957,15 @@ pub fn serve(app: App) -> Result<(), String> {
             ("Cross-Origin-Opener-Policy", "same-origin".into()),
             ("Cross-Origin-Resource-Policy", "same-origin".into()),
             ("Permissions-Policy", "camera=(), microphone=(), geolocation=(), interest-cohort=()".into()),
+            // Browsers ignore this over plain HTTP; behind the HTTPS proxy it pins HTTPS.
+            ("Strict-Transport-Security", "max-age=31536000; includeSubDomains".into()),
         ];
+        if method == "POST" && path.split('?').next() == Some("/logout") {
+            hdrs.push((
+                "Clear-Site-Data",
+                "\"cache\", \"cookies\", \"storage\"".into(),
+            ));
+        }
         if let Some(loc) = resp.location {
             hdrs.push(("Location", loc));
         }

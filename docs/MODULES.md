@@ -55,7 +55,7 @@ Do this once per module you use (`afas-entra-sync-roles`, `-joiner`, `-leaver`).
 
    ```
    cd /etc/afas-entra-sync
-   openssl req -x509 -newkey rsa:3072 -sha256 -days 730 -nodes \
+   openssl req -x509 -newkey rsa:3072 -sha256 -days 365 -nodes \
      -subj "/CN=afas-entra-sync-roles" -keyout roles-key.pem -out roles-cert.pem
    chown afas-entra-sync: roles-key.pem roles-cert.pem
    chmod 0600 roles-key.pem
