@@ -25,8 +25,21 @@ Entra. Safe to run again; `sudo afas-entra-sync uninstall` removes it. Ansible u
 [deploy/ansible](deploy/ansible/README.md) instead.
 
 **Documentation:** step-by-step setup and operation in [docs/GUIDE.md](docs/GUIDE.md),
-security in [SECURITY.md](SECURITY.md), Ansible deployment in
+the optional modules in [docs/MODULES.md](docs/MODULES.md), security in [SECURITY.md](SECURITY.md), Ansible deployment in
 [deploy/ansible](deploy/ansible/README.md).
+
+## Optional modules: the rest of joiner, mover, leaver
+
+Each module is off until configured, signs in with its own app registration, plans first
+(dry-run) and stops by itself above its own maximum. Details: [docs/MODULES.md](docs/MODULES.md).
+
+| Module | Does |
+| --- | --- |
+| Roles and licences | Group membership from HR data (department, job profile, ...); licences via group-based licensing; segregation-of-duties rules; time-limited exceptions with a reason |
+| Joiners | Temporary Access Pass for the first sign-in, valid from the start date, mailed to the manager; no passwords sent |
+| Leavers | Sign out everywhere and set an automatic reply after the end date |
+| Webhook | Signed joiner/mover/leaver events (HMAC-SHA256) for an ITSM tool or Power Automate, with retries |
+| Access log | Who got or lost which access, when and through which module; JSON or CSV export |
 
 ## Design principle: when in doubt, send nothing
 
@@ -197,6 +210,8 @@ afas-entra-sync -c config.toml check-logs --since-minutes 120    # check provisi
 afas-entra-sync -c config.toml check-tls                         # TLS version, cipher and key exchange per endpoint
 afas-entra-sync -c config.toml serve                             # admin GUI (needs [gui] enabled = true)
 afas-entra-sync -c config.toml gui-enable                        # turn the GUI back on after turning it off in the GUI
+afas-entra-sync -c config.toml report [--employee N] [--since D] [--csv]   # access log of the modules
+afas-entra-sync -c config.toml exception add|list|remove        # time-limited exceptions to the role rules
 sudo afas-entra-sync install [--enable-sync] [flags]             # install / upgrade on this host (see install --help)
 sudo afas-entra-sync uninstall [--purge]                         # remove (keeps config and state unless --purge)
 ```
@@ -215,9 +230,11 @@ permissions 0600 (Linux). Note: `--dump-payload` *does* contain personal data.
 | 10 | Configuration error |
 | 11 | Another run is active |
 | 20 | Safety stop: **nothing** uploaded |
+| 21 | A module stopped itself above its maximum; that module changed nothing |
 | 30 | AFAS error, or the AFAS response does not match the configuration |
 | 40 | Getting a token from Entra failed |
 | 41 | Upload failed (possibly partially uploaded; the next run repairs it) |
+| 42 | A module failed (sign-in, Graph or webhook); see `modules` in the report |
 | 50 | `check-logs`: provisioning logs contain failures |
 | 60 | `check-tls`: an endpoint does not meet the `[tls]` policy |
 

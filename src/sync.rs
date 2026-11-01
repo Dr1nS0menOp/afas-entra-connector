@@ -26,6 +26,8 @@ pub struct RunOptions {
     pub dump_payload: Option<PathBuf>,
     /// For tests against a local mock: do not use the system proxy.
     pub use_system_proxy: bool,
+    /// Who started the run (access log): "cli", "timer", or the GUI user.
+    pub actor: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -42,6 +44,9 @@ pub struct Report {
     /// Active last run, no longer sent: review manually.
     pub disappeared_while_active: Vec<String>,
     pub upload: Option<UploadOutcome>,
+    /// Results of the optional modules (roles, joiner, leaver, webhook).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub modules: Option<crate::modules::ModulesReport>,
     pub result: String,
     pub exit_code: i32,
 }
@@ -81,6 +86,7 @@ pub fn run(
         warnings: vec![],
         disappeared_while_active: vec![],
         upload: None,
+        modules: None,
         result: String::new(),
         exit_code: exit::OK,
     };
@@ -88,18 +94,32 @@ pub fn run(
     let result = run_inner(cfg, opts, sleep, &store, today, &mut report);
     let (res, plan) = match result {
         Ok(plan) => {
-            let attention = !plan.exclusions.is_empty() || !plan.disappeared.is_empty();
-            let code = if attention {
-                exit::COMPLETED_WITH_EXCLUSIONS
+            if cfg.any_module_enabled() {
+                report.modules = Some(run_modules(cfg, opts, sleep, &store, today, &plan));
+            }
+            let m = report.modules.clone().unwrap_or_default();
+            let attention =
+                !plan.exclusions.is_empty() || !plan.disappeared.is_empty() || m.any_notes();
+            let (code, text) = if m.any_error() {
+                (
+                    exit::MODULE_FAILED,
+                    "provisioning ok, but a module failed (see modules)",
+                )
+            } else if m.any_violation() {
+                (
+                    exit::MODULE_GUARD,
+                    "provisioning ok, but a module hit its safety threshold and changed nothing (see modules)",
+                )
+            } else if attention {
+                (
+                    exit::COMPLETED_WITH_EXCLUSIONS,
+                    "ok, but records need attention (see exclusions / disappeared_while_active / modules)",
+                )
             } else {
-                exit::OK
+                (exit::OK, "ok")
             };
             report.exit_code = code;
-            report.result = if attention {
-                "ok, but records need attention (see exclusions / disappeared_while_active)".into()
-            } else {
-                "ok".into()
-            };
+            report.result = text.into();
             (Ok(()), Some(plan))
         }
         Err(e) => {
@@ -116,6 +136,44 @@ pub fn run(
         (Err(e), _) | (Ok(()), Err(e)) => Err((e, Some(Box::new(report)))),
         (Ok(()), Ok(())) => Ok(RunResult { report, plan }),
     }
+}
+
+fn run_modules(
+    cfg: &Config,
+    opts: &RunOptions,
+    sleep: &dyn Fn(Duration),
+    store: &StateStore,
+    today: NaiveDate,
+    plan: &Plan,
+) -> crate::modules::ModulesReport {
+    use crate::modules::{Ctx, ModulesReport, load_state, people, run_all, save_state};
+    let mut state = match load_state(store.dir()) {
+        Ok(s) => s,
+        Err(e) => {
+            return ModulesReport {
+                error: Some(e),
+                ..Default::default()
+            };
+        }
+    };
+    let people = people(&plan.records, cfg.population.name.as_deref());
+    let ctx = Ctx {
+        cfg,
+        people: &people,
+        today,
+        apply: opts.apply,
+        use_system_proxy: opts.use_system_proxy,
+        sleep,
+        state_dir: store.dir(),
+        actor: &opts.actor,
+    };
+    let mut rep = run_all(&ctx, &mut state);
+    if opts.apply
+        && let Err(e) = save_state(store.dir(), &state)
+    {
+        rep.error = Some(format!("module state not saved: {e}"));
+    }
+    rep
 }
 
 fn run_inner(

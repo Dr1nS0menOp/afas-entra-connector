@@ -228,6 +228,7 @@ fn header<'a>(r: &'a Request<'_>, name: &str) -> Option<&'a str> {
 #[derive(Clone, Copy)]
 enum Kind {
     Text { max: usize },
+    LongText { max: usize },
     Int { min: i64, max: i64 },
     Bool,
     List,
@@ -245,6 +246,8 @@ struct Section {
     slug: &'static str,
     title: &'static str,
     intro: &'static str,
+    /// Module section that must exist in the config file before this page can edit it.
+    requires: Option<&'static str>,
     fields: &'static [Field],
 }
 
@@ -263,6 +266,7 @@ static SECTIONS: &[Section] = &[
         slug: "source",
         title: "AFAS source",
         intro: "Where the employees come from and how they are fetched.",
+        requires: None,
         fields: &[
             f(
                 "afas.base_url",
@@ -321,6 +325,7 @@ static SECTIONS: &[Section] = &[
         slug: "fields",
         title: "Fields",
         intro: "Which AFAS field holds which value. Names must match the GetConnector exactly.",
+        requires: None,
         fields: &[
             f(
                 "afas.fields.employee_id",
@@ -401,6 +406,7 @@ static SECTIONS: &[Section] = &[
         slug: "attributes",
         title: "Extra attributes",
         intro: "On = read from AFAS and send. Off = not read and not sent; the value in AD then stays, unless clear attribute values is on in the provisioning app.",
+        requires: None,
         fields: &[
             f(
                 "afas.fields.extra.phone_work",
@@ -480,6 +486,7 @@ static SECTIONS: &[Section] = &[
         slug: "entra",
         title: "Entra ID",
         intro: "The provisioning app the employees are sent to.",
+        requires: None,
         fields: &[
             f("entra.tenant_id", "Tenant", "", T),
             f("entra.client_id", "App registration", "", T),
@@ -513,6 +520,7 @@ static SECTIONS: &[Section] = &[
         slug: "safety",
         title: "Safety and windows",
         intro: "When accounts are created and disabled, and when a run stops without uploading anything.",
+        requires: None,
         fields: &[
             f(
                 "policy.timezone",
@@ -580,6 +588,7 @@ static SECTIONS: &[Section] = &[
         slug: "tls",
         title: "TLS",
         intro: "How connections to AFAS, Entra login and Graph are secured. Fixed in the config file; the GUI cannot weaken it. Without a [tls] section: TLS 1.3 minimum, post-quantum key exchange preferred. Use Check TLS under Run to see what each endpoint negotiates.",
+        requires: None,
         fields: &[
             f(
                 "tls.min_version",
@@ -599,6 +608,7 @@ static SECTIONS: &[Section] = &[
         slug: "upload",
         title: "Upload",
         intro: "Pace and retry behaviour towards Microsoft. The defaults follow the Microsoft limits.",
+        requires: None,
         fields: &[
             f(
                 "upload.batch_size",
@@ -654,9 +664,135 @@ static SECTIONS: &[Section] = &[
         ],
     },
     Section {
+        slug: "roles",
+        title: "Roles and licences",
+        intro: "Group membership follows AFAS attributes; licences follow through group-based licensing. The app registration, group prefix and rules are in the config file; the rules are listed under Modules.",
+        requires: Some("roles"),
+        fields: &[
+            f("roles.enabled", "Module on", "", Kind::Bool),
+            f(
+                "roles.include_prehires",
+                "Groups before the start date",
+                "Licences then start counting before the first working day.",
+                Kind::Bool,
+            ),
+            f(
+                "roles.keep_leavers_days",
+                "Keep leavers in groups (days)",
+                "E.g. to keep a licensed mailbox while it is converted.",
+                Kind::Int { min: 0, max: 365 },
+            ),
+            f(
+                "roles.remove_unknown_members",
+                "Remove members not from AFAS",
+                "Off: admin and service accounts in managed groups are left alone.",
+                Kind::Bool,
+            ),
+            f(
+                "roles.max_changes_per_run",
+                "Maximum group changes per run",
+                "More: nothing is changed.",
+                Kind::Int {
+                    min: 1,
+                    max: 100_000,
+                },
+            ),
+        ],
+    },
+    Section {
+        slug: "joiner",
+        title: "Joiners",
+        intro: "A Temporary Access Pass for the first sign-in, valid from the start date, mailed to the manager or a fixed address. Sender and recipients are fixed in the config file.",
+        requires: Some("joiner"),
+        fields: &[
+            f("joiner.enabled", "Module on", "", Kind::Bool),
+            f(
+                "joiner.days_before_start",
+                "Issue days before start",
+                "The pass only works from the start date.",
+                Kind::Int { min: 0, max: 14 },
+            ),
+            f(
+                "joiner.start_hour",
+                "Valid from (hour)",
+                "Local time on the start date.",
+                Kind::Int { min: 0, max: 23 },
+            ),
+            f(
+                "joiner.lifetime_minutes",
+                "Valid for (minutes)",
+                "Also limited by the tenant's TAP policy.",
+                Kind::Int {
+                    min: 60,
+                    max: 43_200,
+                },
+            ),
+            f("joiner.usable_once", "Single use", "", Kind::Bool),
+            f(
+                "joiner.max_per_run",
+                "Maximum passes per run",
+                "More: none are issued.",
+                Kind::Int {
+                    min: 1,
+                    max: 10_000,
+                },
+            ),
+            f(
+                "joiner.subject",
+                "Mail subject",
+                "{display_name} {upn} {start_date}; never {tap}.",
+                Kind::Text { max: 200 },
+            ),
+            f(
+                "joiner.body",
+                "Mail text",
+                "Must contain {tap}. Also {display_name} {upn} {start_date} {valid_from} {valid_until}.",
+                Kind::LongText { max: 4000 },
+            ),
+        ],
+    },
+    Section {
+        slug: "leaver",
+        title: "Leavers",
+        intro: "The day after the end date: sign out everywhere and set an automatic reply. The account itself is disabled by provisioning; groups and licences by the roles module.",
+        requires: Some("leaver"),
+        fields: &[
+            f("leaver.enabled", "Module on", "", Kind::Bool),
+            f("leaver.revoke_sessions", "Revoke sessions", "", Kind::Bool),
+            f(
+                "leaver.auto_reply",
+                "Automatic reply",
+                "{display_name} {manager_name} {manager_email}. Empty in the config file = none.",
+                Kind::LongText { max: 4000 },
+            ),
+            f(
+                "leaver.auto_reply_external",
+                "Also reply to external senders",
+                "",
+                Kind::Bool,
+            ),
+            f(
+                "leaver.grace_days",
+                "Act on end dates up to (days ago)",
+                "",
+                Kind::Int { min: 1, max: 90 },
+            ),
+            f(
+                "leaver.max_per_run",
+                "Maximum leavers per run",
+                "More: nothing is done.",
+                Kind::Int {
+                    min: 1,
+                    max: 10_000,
+                },
+            ),
+        ],
+    },
+    Section {
         slug: "population",
         title: "Population",
         intro: "For contractors, externals and interns: one config per group, recognisable by name and prefix.",
+        requires: None,
         fields: &[
             f(
                 "population.name",
@@ -786,6 +922,8 @@ pub fn handle(app: &App, r: &Request<'_>) -> Response {
             "/run/check-tls" => post_check_tls(app, &user),
             "/payload/delete" => post_payload_delete(&layers, &user),
             "/gui/off" => post_gui_off(app, &layers, &user),
+            "/exceptions/add" => post_exception_add(app, &layers, &form, &user),
+            "/exceptions/remove" => post_exception_remove(&layers, &form, &user),
             p => {
                 if let Some(slug) = p.strip_prefix("/settings/reset/") {
                     post_settings_reset(&layers, slug, &user)
@@ -805,6 +943,10 @@ pub fn handle(app: &App, r: &Request<'_>) -> Response {
         "/run" => html(200, &(flash_into(page_run(app, &layers, None), query))),
         "/audit" => html(200, &page_audit(app, &layers)),
         "/gui" => html(200, &page_gui(app, &layers)),
+        "/modules" => html(200, &page_modules(app, &layers)),
+        "/access" => html(200, &page_access(app, &layers, query)),
+        "/access.csv" => get_access_csv(&layers, query, &user),
+        "/exceptions" => html(200, &flash_into(page_exceptions(app, &layers, None), query)),
         "/payload" => get_payload(&layers, &user),
         p => match p.strip_prefix("/settings/").and_then(find_section) {
             Some(sec) => html(
@@ -841,6 +983,11 @@ fn post_settings(
     let Some(sec) = find_section(slug) else {
         return text(404, "Not found.");
     };
+    if let Some(m) = sec.requires
+        && !l.base.contains_key(m)
+    {
+        return text(409, "This module is not set up in the config file.");
+    }
     let mut ov = l.overrides.clone();
     let mut changed: Vec<String> = Vec::new();
     for fld in sec.fields {
@@ -911,6 +1058,23 @@ fn parse_field(
                 return Err(format!("at most {max} characters, no control characters"));
             }
             Ok(Some(toml::Value::String(raw.to_string())))
+        }
+        Kind::LongText { max } => {
+            let full = form_get(form, fld.path).unwrap_or("").replace("\r\n", "\n");
+            let v = full.trim_end();
+            if v.trim().is_empty() {
+                return if base.is_some() {
+                    Err("clearing is only possible in the config file".into())
+                } else {
+                    Ok(None)
+                };
+            }
+            if v.chars().count() > max
+                || v.chars().any(|c| c.is_control() && c != '\n' && c != '\t')
+            {
+                return Err(format!("at most {max} characters, no control characters"));
+            }
+            Ok(Some(toml::Value::String(v.to_string())))
         }
         Kind::List => {
             let items: Vec<toml::Value> = raw
@@ -1089,6 +1253,7 @@ fn post_dry_run(app: &App, form: &[(String, String)], user: &str) -> Response {
         None => "dry-run".into(),
     };
     let dir2 = dir.clone();
+    let actor = format!("gui:{user}");
     start_run(app, &label, user, &dir, move || {
         let cfg = match Config::load(&cfg_path) {
             Ok(c) => c,
@@ -1100,6 +1265,7 @@ fn post_dry_run(app: &App, form: &[(String, String)], user: &str) -> Response {
             allow_mass_disable: false,
             dump_payload: keep_payload.then(|| dir2.join(PAYLOAD_FILE)),
             use_system_proxy: proxy,
+            actor: actor.clone(),
         };
         let s = |d: Duration| sleep(d);
         match run(&cfg, &opts, &s) {
@@ -1132,6 +1298,7 @@ fn post_apply(app: &App, l: &Layers, form: &[(String, String)], user: &str) -> R
     } else {
         "sync"
     };
+    let actor = format!("gui:{user}");
     start_run(app, label, user, &l.config.state.dir, move || {
         let cfg = match Config::load(&cfg_path) {
             Ok(c) => c,
@@ -1143,6 +1310,7 @@ fn post_apply(app: &App, l: &Layers, form: &[(String, String)], user: &str) -> R
             allow_mass_disable: allow_mass,
             dump_payload: None,
             use_system_proxy: proxy,
+            actor: actor.clone(),
         };
         let s = |d: Duration| sleep(d);
         match run(&cfg, &opts, &s) {
@@ -1560,6 +1728,15 @@ fn page_run(app: &App, l: &Layers, error: Option<&str>) -> String {
 fn page_section(app: &App, l: &Layers, sec: &Section, error: Option<&str>) -> String {
     let mut b = String::new();
     let _ = write!(b, "<p class=lead>{}</p>", esc(sec.intro));
+    if let Some(m) = sec.requires
+        && !l.base.contains_key(m)
+    {
+        let _ = write!(
+            b,
+            "<section class=empty><h2>Not set up</h2><p>Add a <code>[{m}]</code> section with its own app registration to the config file first; see the guide. Then its settings can be changed here.</p></section>"
+        );
+        return layout(app, l, sec.slug, sec.title, &b);
+    }
     if let Some(e) = error {
         let _ = write!(
             b,
@@ -1672,6 +1849,15 @@ fn page_section(app: &App, l: &Layers, sec: &Section, error: Option<&str>) -> St
                     esc(v)
                 );
             }
+            Kind::LongText { .. } => {
+                let v = cur.and_then(toml::Value::as_str).unwrap_or("");
+                let _ = write!(
+                    b,
+                    "<textarea id={id} name=\"{}\" rows=7{dis}>{}</textarea>",
+                    fld.path,
+                    esc(v)
+                );
+            }
         }
         b.push_str("</div></div>");
     }
@@ -1768,6 +1954,379 @@ fn capital(s: &str) -> String {
     })
 }
 
+// ===================================================================== modules
+
+fn module_status(on: Option<bool>) -> &'static str {
+    match on {
+        None => "not set up",
+        Some(false) => "off",
+        Some(true) => "on",
+    }
+}
+
+fn page_modules(app: &App, l: &Layers) -> String {
+    let c = &l.config;
+    let mut b = String::from(
+        "<p class=lead>Optional modules after the provisioning upload. Each signs in with its own app registration and stops by itself when it would change more than its maximum.</p>",
+    );
+    let rep: Option<Value> = std::fs::read(c.state.dir.join(REPORT_FILE))
+        .ok()
+        .and_then(|d| serde_json::from_slice(&d).ok());
+    b.push_str(
+        "<section><table><thead><tr><th>Module</th><th>Status</th><th>Last run</th></tr></thead><tbody>",
+    );
+    for (key, label, on) in [
+        (
+            "roles",
+            "Roles and licences",
+            c.roles.as_ref().map(|m| m.enabled),
+        ),
+        (
+            "joiner",
+            "Joiners (Temporary Access Pass)",
+            c.joiner.as_ref().map(|m| m.enabled),
+        ),
+        ("leaver", "Leavers", c.leaver.as_ref().map(|m| m.enabled)),
+        ("webhook", "Webhook", c.webhook.as_ref().map(|m| m.enabled)),
+    ] {
+        let m = rep.as_ref().map(|r| &r["modules"][key]);
+        let last = match m {
+            Some(m) if !m.is_null() => {
+                if let Some(e) = m["error"].as_str() {
+                    format!("error: {e}")
+                } else if let Some(v) = m["violations"].as_array().and_then(|v| v.first()) {
+                    format!("stopped: {}", v.as_str().unwrap_or(""))
+                } else {
+                    format!(
+                        "{} planned, {} applied, {} failed, {} notes",
+                        m["planned"].as_array().map_or(0, Vec::len),
+                        m["applied"].as_u64().unwrap_or(0),
+                        m["failed"].as_array().map_or(0, Vec::len),
+                        m["notes"].as_array().map_or(0, Vec::len)
+                    )
+                }
+            }
+            _ => "—".into(),
+        };
+        let _ = write!(
+            b,
+            "<tr><td>{}</td><td>{}</td><td>{}</td></tr>",
+            esc(label),
+            module_status(on),
+            esc(&last)
+        );
+    }
+    b.push_str("</tbody></table></section>");
+    if let Some(r) = &c.roles {
+        let _ = write!(
+            b,
+            "<section><h2>Role rules ({})</h2><p class=note>Managed groups must start with <code>{}</code>. Rules are changed in the config file.</p><table><thead><tr><th>Group</th><th>Who</th></tr></thead><tbody>",
+            r.rules.len(),
+            esc(&r.group_prefix)
+        );
+        for rule in &r.rules {
+            let who = if rule.all {
+                "everyone".to_string()
+            } else {
+                rule.criteria()
+                    .iter()
+                    .filter(|(_, v)| !v.is_empty())
+                    .map(|(k, v)| format!("{k}: {}", v.join(" or ")))
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            };
+            let _ = write!(
+                b,
+                "<tr><td>{}<small>{}</small></td><td>{}</td></tr>",
+                esc(rule.name.as_deref().unwrap_or("")),
+                esc(&rule.group_id),
+                esc(&who)
+            );
+        }
+        b.push_str("</tbody></table></section>");
+        if !r.sod.is_empty() {
+            b.push_str("<section><h2>Segregation of duties</h2><table><thead><tr><th>Name</th><th>Never together</th></tr></thead><tbody>");
+            let name = |g: &str| {
+                r.rules
+                    .iter()
+                    .find(|x| x.group_id.eq_ignore_ascii_case(g))
+                    .and_then(|x| x.name.clone())
+                    .unwrap_or_else(|| g.to_string())
+            };
+            for s in &r.sod {
+                let names: Vec<String> = s.groups.iter().map(|g| name(g)).collect();
+                let _ = write!(
+                    b,
+                    "<tr><td>{}</td><td>{}</td></tr>",
+                    esc(&s.name),
+                    esc(&names.join(", "))
+                );
+            }
+            b.push_str("</tbody></table></section>");
+        }
+    }
+    layout(app, l, "modules", "Modules", &b)
+}
+
+fn query_get(query: &str, key: &str) -> Option<String> {
+    query
+        .split('&')
+        .find_map(|kv| kv.strip_prefix(&format!("{key}=")))
+        .map(url_decode)
+        .filter(|v| !v.trim().is_empty())
+}
+
+fn page_access(app: &App, l: &Layers, query: &str) -> String {
+    use crate::modules::records::read_access;
+    let emp = query_get(query, "employee").filter(|e| e.len() <= 16);
+    let mut b = String::from(
+        "<p class=lead>Every group change, Temporary Access Pass and leaver action the modules made, newest first.</p>",
+    );
+    let _ = write!(
+        b,
+        "<form method=get action=/access class=row><label>Employee number <input name=employee value=\"{}\" size=12></label><button class=quiet>Filter</button><a class=btn href=\"/access.csv{}\">Download CSV</a></form>",
+        esc(emp.as_deref().unwrap_or("")),
+        emp.as_deref()
+            .map(|e| format!("?employee={}", esc(&url_encode(e))))
+            .unwrap_or_default()
+    );
+    match read_access(&l.config.state.dir, emp.as_deref(), None) {
+        Err(e) => {
+            let _ = write!(b, "<p class=\"msg bad\">{}</p>", esc(&e));
+        }
+        Ok(v) if v.is_empty() => b.push_str("<p class=note>Nothing recorded yet.</p>"),
+        Ok(v) => {
+            b.push_str("<table><thead><tr><th>Time</th><th>Employee</th><th>What</th><th>Target</th><th>Result</th></tr></thead><tbody>");
+            for e in v.iter().rev().take(500) {
+                let _ = write!(
+                    b,
+                    "<tr><td class=nowrap>{}</td><td>{}<small>{}</small></td><td>{}<small>{}</small></td><td>{}</td><td>{}</td></tr>",
+                    esc(&fmt_time(&e.utc)),
+                    esc(e.employee_id.as_deref().unwrap_or("—")),
+                    esc(e.upn.as_deref().unwrap_or("")),
+                    esc(&e.action.replace('_', " ")),
+                    esc(&e.module),
+                    esc(e.target.as_deref().unwrap_or("")),
+                    if e.ok {
+                        esc(e.detail.as_deref().unwrap_or("ok"))
+                    } else {
+                        format!("<b>failed</b> {}", esc(e.detail.as_deref().unwrap_or("")))
+                    }
+                );
+            }
+            b.push_str("</tbody></table>");
+        }
+    }
+    layout(app, l, "access", "Access log", &b)
+}
+
+fn get_access_csv(l: &Layers, query: &str, user: &str) -> Response {
+    use crate::modules::records::{access_csv, read_access};
+    let emp = query_get(query, "employee").filter(|e| e.len() <= 16);
+    match read_access(&l.config.state.dir, emp.as_deref(), None) {
+        Ok(v) => {
+            audit(
+                &l.config.state.dir,
+                user,
+                "access log exported",
+                emp.as_deref().unwrap_or("all"),
+            );
+            Response {
+                status: 200,
+                content_type: "text/csv; charset=utf-8",
+                location: None,
+                disposition: Some("attachment; filename=\"access-log.csv\"".into()),
+                set_cookie: None,
+                body: access_csv(&v).into_bytes(),
+            }
+        }
+        Err(e) => text(500, &e),
+    }
+}
+
+fn page_exceptions(app: &App, l: &Layers, error: Option<&str>) -> String {
+    use crate::modules::records::{ExceptionKind, load_exceptions};
+    let today = chrono::Utc::now()
+        .with_timezone(&l.config.tz())
+        .date_naive();
+    let mut b = String::from(
+        "<p class=lead>Manual deviations from the role rules, each with an end date and a reason. After the end date the rules apply again.</p>",
+    );
+    if let Some(e) = error {
+        let _ = write!(
+            b,
+            "<p class=\"msg bad\" role=alert>Not saved. {}</p>",
+            esc(e)
+        );
+    }
+    let ro = app.opts.read_only;
+    let names: std::collections::HashMap<String, String> = l
+        .config
+        .roles
+        .as_ref()
+        .map(|r| {
+            r.rules
+                .iter()
+                .map(|x| {
+                    (
+                        x.group_id.to_ascii_lowercase(),
+                        x.name.clone().unwrap_or_else(|| x.group_id.clone()),
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    match load_exceptions(&l.config.state.dir) {
+        Err(e) => {
+            let _ = write!(b, "<p class=\"msg bad\">{}</p>", esc(&e));
+        }
+        Ok(x) if x.items.is_empty() => b.push_str("<p class=note>No exceptions.</p>"),
+        Ok(x) => {
+            b.push_str("<section><table><thead><tr><th>Employee</th><th>Group</th><th>Kind</th><th>Until</th><th>Reason</th><th></th></tr></thead><tbody>");
+            for e in &x.items {
+                let expired = e.until < today;
+                let _ = write!(
+                    b,
+                    "<tr><td>{}</td><td>{}</td><td>{}</td><td class=nowrap>{}{}</td><td>{}<small>{}, {}</small></td><td>",
+                    esc(&e.employee_id),
+                    esc(names
+                        .get(&e.group_id.to_ascii_lowercase())
+                        .unwrap_or(&e.group_id)),
+                    if e.kind == ExceptionKind::Include {
+                        "keep in"
+                    } else {
+                        "keep out"
+                    },
+                    e.until,
+                    if expired {
+                        " <small>expired</small>"
+                    } else {
+                        ""
+                    },
+                    esc(&e.reason),
+                    esc(&e.created_by),
+                    esc(&fmt_time(&e.created_utc))
+                );
+                if !ro {
+                    let _ = write!(
+                        b,
+                        "<form method=post action=/exceptions/remove><input type=hidden name=csrf value={}><input type=hidden name=id value=\"{}\"><button class=quiet>Remove</button></form>",
+                        app.csrf,
+                        esc(&e.id)
+                    );
+                }
+                b.push_str("</td></tr>");
+            }
+            b.push_str("</tbody></table></section>");
+        }
+    }
+    if !ro && !names.is_empty() {
+        let mut opts = String::new();
+        let mut sorted: Vec<_> = names.iter().collect();
+        sorted.sort_by(|a, b| a.1.cmp(b.1));
+        for (id, n) in sorted {
+            let _ = write!(opts, "<option value=\"{}\">{}</option>", esc(id), esc(n));
+        }
+        let _ = write!(
+            b,
+            "<section class=action><div><h2>Add exception</h2><p>Only groups from the role rules. At most one year ahead.</p></div>\
+<form method=post action=/exceptions/add><input type=hidden name=csrf value={}>\
+<label>Employee number<input name=employee required maxlength=16></label>\
+<label>Group<select name=group>{opts}</select></label>\
+<label>Kind<select name=kind><option value=include>keep in the group</option><option value=exclude>keep out of the group</option></select></label>\
+<label>Until (last day)<input name=until type=date required></label>\
+<label>Reason<input name=reason required maxlength=500></label>\
+<button>Add exception</button></form></section>",
+            app.csrf
+        );
+    } else if names.is_empty() {
+        b.push_str("<p class=note>Set up the roles module to use exceptions.</p>");
+    }
+    layout(app, l, "exceptions", "Exceptions", &b)
+}
+
+fn post_exception_add(app: &App, l: &Layers, form: &[(String, String)], user: &str) -> Response {
+    use crate::modules::records::{ExceptionKind, add_exception};
+    let today = chrono::Utc::now()
+        .with_timezone(&l.config.tz())
+        .date_naive();
+    let g = |k: &str| form_get(form, k).unwrap_or("").trim().to_string();
+    let group = g("group");
+    let in_rules = l.config.roles.as_ref().is_some_and(|r| {
+        r.rules
+            .iter()
+            .any(|x| x.group_id.eq_ignore_ascii_case(&group))
+    });
+    let res = (|| {
+        if !in_rules {
+            return Err("group is not in the role rules".to_string());
+        }
+        let kind = match g("kind").as_str() {
+            "include" => ExceptionKind::Include,
+            "exclude" => ExceptionKind::Exclude,
+            _ => return Err("kind must be include or exclude".into()),
+        };
+        let until = NaiveDate::parse_from_str(&g("until"), "%Y-%m-%d")
+            .map_err(|_| "until must be a date (YYYY-MM-DD)".to_string())?;
+        add_exception(
+            &l.config.state.dir,
+            &g("employee"),
+            &group,
+            kind,
+            until,
+            &g("reason"),
+            user,
+            today,
+        )
+    })();
+    match res {
+        Ok(id) => {
+            audit(
+                &l.config.state.dir,
+                user,
+                "exception added",
+                &format!(
+                    "{id}: {} {} in {} until {}: {}",
+                    g("kind"),
+                    g("employee"),
+                    group,
+                    g("until"),
+                    g("reason")
+                ),
+            );
+            redirect("/exceptions?ok=1")
+        }
+        Err(e) => html(400, &page_exceptions(app, l, Some(&e))),
+    }
+}
+
+fn post_exception_remove(l: &Layers, form: &[(String, String)], user: &str) -> Response {
+    let id = form_get(form, "id").unwrap_or("");
+    match crate::modules::records::remove_exception(&l.config.state.dir, id) {
+        Ok(e) => {
+            audit(
+                &l.config.state.dir,
+                user,
+                "exception removed",
+                &format!("{}: {} {}", e.id, e.employee_id, e.group_id),
+            );
+            redirect("/exceptions?ok=1")
+        }
+        Err(e) => text(404, &e),
+    }
+}
+
+fn url_encode(s: &str) -> String {
+    s.bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                (b as char).to_string()
+            }
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
+}
+
 // ===================================================================== styling
 
 const CSS: &str = r#"
@@ -1809,6 +2368,8 @@ form.settings{background:var(--surface);border:1px solid var(--line);border-radi
 .field{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.1fr);gap:16px;padding:16px 20px;border-bottom:1px solid var(--line);align-items:start}
 .field .label label{font-weight:600}.control{display:flex;gap:12px;align-items:center}
 input:not([type=checkbox]){font:inherit;color:var(--ink);background:var(--surface);border:1px solid var(--line);border-radius:6px;padding:7px 10px;width:100%}
+select{font:inherit;font-weight:400;color:var(--ink);background:var(--surface);border:1px solid var(--line);border-radius:6px;padding:7px 10px;width:100%}
+textarea{font:inherit;color:var(--ink);background:var(--surface);border:1px solid var(--line);border-radius:6px;padding:7px 10px;width:100%;resize:vertical}textarea:disabled{background:var(--bg);color:var(--muted)}
 input.num{max-width:9em}input{font-weight:400!important}::placeholder{color:var(--muted);opacity:.7}input:disabled{background:var(--bg);color:var(--muted)}
 .badge{display:inline-block;font-size:12.5px;padding:1px 8px;border-radius:999px;margin-left:8px;vertical-align:1px}
 .badge.lock{background:var(--bg);color:var(--muted)}.badge.gui{background:var(--accent);color:var(--accent-ink)}
@@ -1856,6 +2417,9 @@ fn layout(app: &App, l: &Layers, active: &str, title: &str, body: &str) -> Strin
         item(&mut nav, &format!("/settings/{}", s.slug), s.slug, s.title);
     }
     nav.push_str("</ul><p class=group>Admin</p><ul>");
+    item(&mut nav, "/modules", "modules", "Modules");
+    item(&mut nav, "/access", "access", "Access log");
+    item(&mut nav, "/exceptions", "exceptions", "Exceptions");
     item(&mut nav, "/audit", "audit", "Audit log");
     item(&mut nav, "/gui", "gui", "GUI");
     nav.push_str("</ul>");

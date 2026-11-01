@@ -25,6 +25,15 @@ pub struct Config {
     /// TLS policy for all outgoing connections (AFAS, Entra login, Graph).
     #[serde(default)]
     pub tls: TlsConfig,
+    /// Optional modules (see `modules`). Each off unless present with `enabled = true`.
+    #[serde(default)]
+    pub roles: Option<crate::modules::settings::RolesConfig>,
+    #[serde(default)]
+    pub joiner: Option<crate::modules::settings::JoinerConfig>,
+    #[serde(default)]
+    pub leaver: Option<crate::modules::settings::LeaverConfig>,
+    #[serde(default)]
+    pub webhook: Option<crate::modules::settings::WebhookConfig>,
 }
 
 /// Lowest TLS version that is accepted.
@@ -171,7 +180,7 @@ pub const OVERRIDES_FILE: &str = "overrides.toml";
 /// Keys the GUI layer (`overrides.toml`) may never change: where secrets come
 /// from, where tokens go, where the state lives, and the GUI switch itself.
 /// Exception: `gui.enabled = false` is allowed (the GUI may turn itself off).
-pub const LOCKED_KEYS: [&str; 13] = [
+pub const LOCKED_KEYS: &[&str] = &[
     "afas.base_url",
     "afas.token_env",
     "afas.token_file",
@@ -185,6 +194,21 @@ pub const LOCKED_KEYS: [&str; 13] = [
     "entra.graph_base",
     "state",
     "tls",
+    // Modules: who they sign in as, which groups they may touch, where mail and events go.
+    "roles.client_id",
+    "roles.certificate_pem",
+    "roles.private_key_pem",
+    "roles.group_prefix",
+    "joiner.client_id",
+    "joiner.certificate_pem",
+    "joiner.private_key_pem",
+    "joiner.sender",
+    "joiner.deliver_to",
+    "joiner.fixed_address",
+    "leaver.client_id",
+    "leaver.certificate_pem",
+    "leaver.private_key_pem",
+    "webhook",
 ];
 
 pub fn is_locked(path: &str) -> bool {
@@ -711,7 +735,22 @@ impl Config {
         if self.upload.backoff_max_ms < self.upload.backoff_base_ms {
             return err("upload.backoff_max_ms must be >= backoff_base_ms");
         }
+        crate::modules::settings::validate(
+            self.roles.as_ref(),
+            self.joiner.as_ref(),
+            self.leaver.as_ref(),
+            self.webhook.as_ref(),
+        )
+        .map_err(AppError::Config)?;
         Ok(())
+    }
+
+    /// True if at least one module is switched on.
+    pub fn any_module_enabled(&self) -> bool {
+        self.roles.as_ref().is_some_and(|m| m.enabled)
+            || self.joiner.as_ref().is_some_and(|m| m.enabled)
+            || self.leaver.as_ref().is_some_and(|m| m.enabled)
+            || self.webhook.as_ref().is_some_and(|m| m.enabled)
     }
 
     pub fn tz(&self) -> chrono_tz::Tz {

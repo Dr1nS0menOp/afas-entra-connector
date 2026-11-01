@@ -28,6 +28,10 @@ pub mod exit {
     pub const UPLOAD: i32 = 41;
     /// Provisioning logs contain failed records.
     pub const LOG_FAILURES: i32 = 50;
+    /// Provisioning done, but a module hit its safety threshold and changed nothing.
+    pub const MODULE_GUARD: i32 = 21;
+    /// Provisioning done, but a module failed (sign-in, Graph or webhook error).
+    pub const MODULE_FAILED: i32 = 42;
     /// `check-tls`: an endpoint does not meet the `[tls]` policy.
     pub const TLS: i32 = 60;
     /// Unexpected internal error.

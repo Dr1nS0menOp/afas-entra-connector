@@ -127,6 +127,7 @@ fn opts(apply: bool) -> RunOptions {
         allow_mass_disable: false,
         dump_payload: None,
         use_system_proxy: false,
+        actor: "test".into(),
     }
 }
 
