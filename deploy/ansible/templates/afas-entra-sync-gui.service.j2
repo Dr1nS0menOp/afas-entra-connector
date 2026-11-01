@@ -1,0 +1,45 @@
+# afas-entra-sync admin GUI — managed by Ansible (deploy/ansible).
+# The GUI stops itself when [gui] enabled is false; it is then not restarted.
+[Unit]
+Description=afas-entra-sync admin GUI
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=afas-sync
+Group=afas-sync
+ExecStart=/usr/local/bin/afas-entra-sync -c /etc/afas-entra-sync/config.toml serve --listen {{ gui_listen | default('127.0.0.1:8080') }}{% if gui_trusted_proxy is defined %} --trusted-proxy {{ gui_trusted_proxy }}{% endif %}
+
+Restart=on-failure
+RestartSec=10
+UMask=0077
+
+# Sandboxing: read-only system, only the state directory is writable.
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/afas-entra-sync
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+ProcSubset=pid
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+
+[Install]
+WantedBy=multi-user.target

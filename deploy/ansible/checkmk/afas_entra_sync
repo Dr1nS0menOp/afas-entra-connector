@@ -1,0 +1,17 @@
+#!/bin/bash
+# checkmk local check: /usr/lib/check_mk_agent/local/afas_entra_sync
+R=/var/lib/afas-entra-sync/last-report.json
+SVC='"AFAS-Entra sync"'
+if [ ! -r "$R" ]; then echo "2 $SVC - No report found ($R)"; exit 0; fi
+age=$(( $(date +%s) - $(stat -c %Y "$R") ))
+rc=$(jq -r '.exit_code // "unknown"' "$R" 2>/dev/null || echo unknown)
+sent=$(jq -r '.counts.sent_total // 0' "$R" 2>/dev/null || echo 0)
+mode=$(jq -r '.mode // "?"' "$R" 2>/dev/null || echo "?")
+res=$(jq -r '.result // ""' "$R" 2>/dev/null | tr '\n' ' ' | cut -c1-200)
+case "$rc" in
+  0) status=0 ;;
+  3) status=1 ;;
+  *) status=2 ;;
+esac
+if [ "$age" -gt 10800 ]; then status=2; res="No run in $((age / 3600)) hours. $res"; fi
+echo "$status $SVC sent=$sent exit $rc ($mode): $res"

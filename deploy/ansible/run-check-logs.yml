@@ -1,0 +1,21 @@
+- name: Check AFAS provisioning logs
+  hosts: "{{ sync_host }}"
+  become: true
+  become_user: afas-sync
+  tasks:
+    - name: Provisioning logs
+      ansible.builtin.command:
+        cmd: /usr/local/bin/afas-entra-sync -c /etc/afas-entra-sync/config.toml check-logs --since-minutes 60
+      register: sync
+      changed_when: false
+      failed_when: false            # show the report first, then fail
+
+    - name: Show report
+      ansible.builtin.debug:
+        msg: "{{ sync.stdout | from_json }}"
+      when: sync.stdout | length > 0
+
+    - name: Fail on any exit code other than 0
+      ansible.builtin.fail:
+        msg: "afas-entra-sync exit {{ sync.rc }}: {{ sync.stderr_lines | default(['no output'], true) | last }}"
+      when: sync.rc != 0

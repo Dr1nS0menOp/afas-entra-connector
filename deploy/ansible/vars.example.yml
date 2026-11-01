@@ -1,0 +1,22 @@
+# Example variables for deploy/ansible. Copy, fill in, and keep secrets in your vault/secret store.
+sync_host: localhost
+afas_env: "12345"              # AFAS environment number (the 12345 in 12345.rest.afas.online)
+afas_connector: Entra_Medewerkers
+afas_token: SET-THIS-AS-A-SECRET
+tenant_id: 00000000-0000-0000-0000-000000000000
+client_id: 00000000-0000-0000-0000-000000000000
+sp_id: 00000000-0000-0000-0000-000000000000           # service principal object ID of the provisioning app
+job_id: API2AD.00000000000000000000000000000000.00000000-0000-0000-0000-000000000000
+upn_domain: example.com
+employee_count: 600
+
+# Admin GUI (afas-entra-sync serve). Off by default.
+gui_enabled: false
+# Only 127.0.0.1 (sign in with the link in /var/lib/afas-entra-sync/gui-login-url),
+# or behind Traefik + Authentik: gui_listen: "0.0.0.0:8080" plus gui_trusted_proxy.
+gui_listen: "127.0.0.1:8080"
+# gui_trusted_proxy: 10.0.0.5
+
+# TLS policy for all outgoing connections.
+tls_min_version: "1.3"      # "1.3" (default) or "1.2"
+tls_post_quantum: prefer    # prefer (default) or require

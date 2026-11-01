@@ -1,0 +1,4 @@
+/target
+/deploy/ansible/files/afas-entra-sync-linux-x86_64
+/deploy/ansible/files/afas-entra-sync-linux-x86_64.sha256
+*.tar.gz
