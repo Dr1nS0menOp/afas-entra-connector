@@ -41,6 +41,15 @@ Each module is off until configured, signs in with its own app registration, pla
 | Webhook | Signed events for new hires, job changes and departing employees (joiner/mover/leaver) (HMAC-SHA256) for an ITSM tool or Power Automate, with retries |
 | Access log | Who got or lost which access, when and through which module; JSON or CSV export |
 
+## Screenshots
+
+The optional admin GUI (off by default, local or behind your SSO proxy). Demo data.
+
+| | |
+| --- | --- |
+| ![Overview of a run](docs/images/overview.png) | ![Modules](docs/images/modules.png) |
+| ![New hires settings](docs/images/new-hires.png) | ![Access log](docs/images/access-log.png) |
+
 ## Words used
 
 Plain words first, with the usual HR or IT term in brackets:
