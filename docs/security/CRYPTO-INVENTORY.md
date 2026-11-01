@@ -2,7 +2,7 @@
 
 Covers OWASP ASVS 5.0 V11.1.1 (key management) and V11.1.2 (inventory). Update this file
 whenever a key, algorithm, library or certificate changes. Last reviewed 2026-11-01
-(version 0.9.3).
+(version 0.10.0).
 
 ## Libraries
 

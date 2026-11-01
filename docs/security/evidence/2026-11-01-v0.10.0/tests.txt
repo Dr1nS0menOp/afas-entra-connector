@@ -1,0 +1,324 @@
+   Compiling afas-entra-sync v0.10.0 (.)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 9.62s
+     Running unittests src/lib.rs (target/debug/deps/afas_entra_sync-63de66eab36f1274)
+
+running 5 tests
+test ux::tests::config_is_found_in_the_documented_order ... ok
+test ux::tests::certificate_notices_at_their_boundaries ... ok
+test ux::tests::root_is_refused_only_where_it_would_break_the_service ... ok
+test ux::tests::user_names_come_from_passwd ... ok
+test ux::tests::summary_reads_like_a_report_and_only_suggests_apply_after_a_good_test_run ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/main.rs (target/debug/deps/afas_entra_sync-5fea5a9d584e9708)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/cli.rs (target/debug/deps/cli-cf4e65e8a065cfc2)
+
+running 9 tests
+test apply_and_as_of_together_rejected_by_cli ... ok
+test check_config_ok_and_bad ... ok
+test doctor_and_afas_fields_via_cli ... ok
+test exception_add_checks_the_group_like_the_gui ... ok
+test full_apply_with_client_secret_via_cli ... ok
+test guard_exit_code_via_cli ... ok
+test missing_secret_env_is_config_error_before_anything_is_sent ... ok
+test no_ansi_color_codes_when_not_a_terminal ... ok
+test check_logs_exit_codes_and_time_window ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 14.27s
+
+     Running tests/doctor.rs (target/debug/deps/doctor-2c4f63e025819df3)
+
+running 9 tests
+test afas_fields_shows_kinds_and_mapping_but_never_values ... ok
+test everything_fine_gives_exit_0_and_says_so ... ok
+test loose_secret_file_is_failed_with_the_chmod_line ... ok
+test missing_permission_names_it ... ok
+test missing_afas_field_is_named_with_its_setting ... ok
+test rejected_afas_token_says_how_to_replace_it ... ok
+test roles_module_groups_are_checked_and_a_missing_one_named ... ok
+test unknown_certificate_gets_the_aadsts_explanation ... ok
+test schedule_and_last_run_are_reported ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.57s
+
+     Running tests/e2e.rs (target/debug/deps/e2e-71b3624855c4f5cc)
+
+running 39 tests
+test afas_auth_error_is_not_retried ... ok
+test afas_ignoring_skip_is_detected ... ok
+test afas_persistent_server_error_gives_up_after_max_attempts ... ok
+test afas_garbage_responses_are_rejected ... ok
+test afas_unreachable_is_retried_then_reported ... ok
+test afas_server_error_is_retried ... ok
+test as_of_cannot_be_combined_with_apply ... ok
+test as_of_changes_the_dry_run_date ... ok
+test bad_request_stops_and_keeps_old_state ... ok
+test bucket_full_waits_five_minutes ... ok
+test client_error_mentioning_bucket_is_still_fatal ... ok
+test apply_happy_path_is_paced_and_idempotent ... ok
+test concurrent_run_is_refused ... ok
+test corrupt_state_blocks_the_run ... ok
+test dry_run_pages_through_afas_and_never_calls_entra ... ok
+test drop_against_previous_run_is_stopped ... ok
+test dump_payload_equals_what_is_uploaded ... ok
+test empty_afas_response_is_stopped ... ok
+test exclusions_give_exit_3_and_are_reported ... ok
+test gives_up_after_max_attempts ... ok
+test guard_violation_uploads_nothing ... ok
+test employee_vanishing_from_afas_is_flagged_not_silently_ignored ... ok
+test logs_are_paged_and_failures_counted ... ok
+test logs_refuse_foreign_next_link ... ok
+test mass_disable_needs_explicit_flag ... ok
+test missing_afas_field_is_fatal ... ok
+test plain_500_uses_backoff_not_bucket_wait ... ok
+test redirects_are_not_followed ... ok
+test repeated_unauthorized_is_fatal ... ok
+test retry_after_429_is_respected ... ok
+test retry_after_is_capped ... ok
+test server_errors_use_exponential_backoff ... ok
+test token_close_to_expiry_is_renewed_before_each_call ... ok
+test token_endpoint_outage_is_retried_then_auth_error ... ok
+test token_endpoint_throttling_is_retried ... ok
+test token_rejection_is_auth_error_and_uploads_nothing ... ok
+test unauthorized_refreshes_token_once ... ok
+test zero_pace_means_no_pauses ... ok
+test hanging_server_is_cut_off_by_timeout ... ok
+
+test result: ok. 39 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.02s
+
+     Running tests/extra.rs (target/debug/deps/extra-7ce958f7d20079ee)
+
+running 13 tests
+test all_extras_on_produce_expected_scim ... ok
+test config_rejects_mistakes_in_extra ... ok
+test country_must_be_two_uppercase_letters ... ok
+test disabled_toggle_is_not_read_or_required ... ok
+test enabled_toggle_field_must_exist_in_afas ... ok
+test extra_length_limits_are_exact ... ok
+test leave_date_only_when_present_and_empty_values_omitted ... ok
+test partial_address_only_sends_present_parts ... ok
+test phone_validation ... ok
+test population_prefix_and_fixed_type ... ok
+test population_config_is_validated ... ok
+test without_extra_section_output_is_unchanged ... ok
+test work_address_and_job_profile ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/install.rs (target/debug/deps/install-24768d72aa17bdfe)
+
+running 16 tests
+test config_builder_accepts_full_url_and_keeps_comments ... ok
+test enable_sync_and_gui ... ok
+test generated_certificate_is_usable_for_entra ... ok
+test interactive_prompts_retry_until_valid ... ok
+test fresh_install_creates_everything_with_safe_permissions ... ok
+test module_setup_needs_root_and_an_installation ... ok
+test module_setup_creates_a_private_key_and_prints_a_working_config_section ... ok
+test not_root_is_refused ... ok
+test reconfigure_renew_and_replace_keep_backups ... ok
+test module_setup_tells_joiner_not_to_grant_mail_send_in_entra ... ok
+test unattended_without_answers_fails_before_writing_config ... ok
+test second_run_keeps_config_token_and_certificate ... ok
+test unit_files_are_hardened_and_run_as_service_user ... ok
+test uninstall_keeps_data_unless_purged ... ok
+test without_systemd_no_units ... ok
+test upgrade_replaces_only_the_binary ... ok
+
+test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 7.14s
+
+     Running tests/module_rules.rs (target/debug/deps/module_rules-78ecc57acd76e932)
+
+running 11 tests
+test departing_employee_window_at_its_boundaries ... ok
+test departing_employee_with_an_account_conflict_is_skipped_with_the_reason ... ok
+test eligibility_for_groups_at_its_boundaries ... ok
+test hmac_with_a_key_of_exactly_one_block ... ok
+test every_rule_criterion_matches_its_own_attribute ... ok
+test new_hire_codes_who_and_where_to ... ok
+test role_plan_notes ... ok
+test sender_mailbox_is_a_safe_path_segment ... ok
+test only_safe_groups_with_the_prefix_can_be_managed ... ok
+test webhook_events_for_every_kind_of_change ... ok
+test unreadable_module_state_is_an_error_not_a_fresh_start ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/modules.rs (target/debug/deps/modules-9698273bd0d95f4b)
+
+running 46 tests
+test access_log_write_failure_is_a_failure ... ok
+test a_pass_that_is_not_valid_yet_is_never_deleted ... ok
+test automatic_reply_is_escaped_and_keeps_line_breaks ... ok
+test certificate_expiry_is_noticed_and_raised_in_the_last_week ... ok
+test csv_export_quotes_and_defuses_formulas ... ok
+test automatic_reply_errors_other_than_no_mailbox_are_failures ... ok
+test exceptions_are_validated ... ok
+test graph_client::calls_are_counted ... ok
+test graph_client::client_errors_are_not_retried_and_the_graph_error_is_parsed ... ok
+test graph_client::entra_user_ignores_empty_employee_id_and_mail ... ok
+test departing_employees_test_run_maximum_and_missing_account ... ok
+test graph_client::get_is_retried_after_503_honouring_retry_after ... ok
+test graph_client::gives_up_after_five_attempts ... ok
+test graph_client::object_ids_in_paths_are_guid_characters_only ... ok
+test graph_client::network_errors_retry_a_get_but_never_a_post ... ok
+test graph_client::one_token_refresh_on_401_then_give_up ... ok
+test graph_client::paging_follows_same_host_only_and_needs_a_value_list ... ok
+test graph_client::retry_after_is_capped_at_two_minutes ... ok
+test graph_client::post_is_not_repeated_after_a_5xx_but_is_after_429 ... ok
+test group_change_maximum_is_inclusive ... ok
+test hmac_matches_rfc4231 ... ok
+test joiner_does_not_repeat_the_post_and_cleans_up_when_the_outcome_is_unknown ... ok
+test joiner_issues_one_pass_mails_the_manager_and_never_logs_it ... ok
+test group_changes_that_fail_are_failures ... ok
+test joiner_never_mails_a_manager_who_has_left ... ok
+test joiner_never_replaces_an_existing_pass ... ok
+test joiner_removes_an_expired_pass_first ... ok
+test joiner_removes_the_pass_when_the_mail_fails_and_retries ... ok
+test module_settings_are_validated ... ok
+test modules_that_act_after_the_end_date_need_the_lookback_window ... ok
+test leaver_revokes_sessions_and_sets_reply_once ... ok
+test new_hire_after_the_start_date_gets_a_code_valid_now ... ok
+test new_hire_code_is_valid_from_the_start_date_only ... ok
+test pass_start_time_survives_daylight_saving_changes ... ok
+test roles_add_and_remove_follow_rules_and_leave_unknown_members_alone ... ok
+test roles_dry_run_plans_but_writes_nothing ... ok
+test new_hires_test_run_and_maximum_per_run ... ok
+test roles_exceptions_and_segregation_of_duties ... ok
+test roles_threshold_stops_all_changes ... ok
+test users_are_matched_safely ... ok
+test roles_refuse_unsafe_groups ... ok
+test webhook_secret_needs_sixteen_characters ... ok
+test webhook_baseline_then_signed_events_with_retry ... ok
+test webhook_sends_in_order_within_its_maximum ... ok
+test webhook_treats_an_old_comparison_as_a_new_baseline ... ok
+test webhook_send_queue_is_capped_at_ten_thousand ... ok
+
+test result: ok. 46 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 8.25s
+
+     Running tests/props.rs (target/debug/deps/props-60b741367531c3ec)
+
+running 5 tests
+test date_parser_roundtrip ... ok
+test date_parser_never_panics ... ok
+test generator_covers_all_paths ... ok
+test text_never_panics_and_is_clean ... ok
+test plan_invariants ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 55.64s
+
+     Running tests/tls.rs (target/debug/deps/tls-ffd8a40739649e5a)
+
+running 11 tests
+test default_policy_negotiates_post_quantum_tls13 ... ok
+test http_client_enforces_policy ... ok
+test prefer_falls_back_to_classical_when_server_has_no_ml_kem ... ok
+test probe_through_connect_proxy ... ok
+test provider_group_order ... ok
+test require_refuses_a_server_without_ml_kem ... ok
+test tls12_only_server_is_refused_by_default_and_allowed_with_min_12 ... ok
+test tls_config_parsing_and_lock ... ok
+test untrusted_certificate_is_refused ... ok
+test wrong_host_name_is_refused ... ok
+test every_policy_combination_builds ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.12s
+
+     Running tests/unit.rs (target/debug/deps/unit-baf3984098d7fdf2)
+
+running 38 tests
+test afas_auth_header_variants ... ok
+test active_boundaries ... ok
+test backoff_and_retry_after ... ok
+test all_length_limits_are_exact ... ok
+test certificate_errors_are_config_errors ... ok
+test config_rejects_mistakes ... ok
+test date_formats_accepted ... ok
+test date_formats_rejected ... ok
+test date_year_range_is_exact ... ok
+test disappeared_while_active_is_detected ... ok
+test example_config_in_repo_is_valid ... ok
+test guard_calls ... ok
+test guard_disables ... ok
+test guard_drop_percent_boundary ... ok
+test guard_invalid_percent ... ok
+test guard_min_records ... ok
+test one_day_employment_is_valid_and_active_that_day ... ok
+test plan_duplicate_upn_case_insensitive ... ok
+test plan_duplicate_upn_outside_window_is_no_conflict ... ok
+test plan_duplicates ... ok
+test plan_is_deterministic_regardless_of_row_order ... ok
+test plan_manager_rules ... ok
+test plan_windows_are_exact ... ok
+test readable_token_file_stops_the_run ... ok
+test remaining_guard_boundaries_are_exact ... ok
+test response_bodies_are_capped ... ok
+test row_errors_are_attributed ... ok
+test client_assertion_is_valid_and_thumbprints_match_openssl ... ok
+test row_with_prefix_and_display_name ... ok
+test scim_omits_empty_optionals ... ok
+test scim_shape_matches_microsoft_example ... ok
+test secret_files_must_be_private ... ok
+test state_roundtrip_corruption_and_lock ... ok
+test text_normalisation ... ok
+test scim_chunking ... ok
+test type_errors_name_the_type ... ok
+test upn_rules ... ok
+test unreadable_state_is_an_error_not_a_first_run ... ok
+
+test result: ok. 38 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s
+
+     Running tests/web.rs (target/debug/deps/web-fc72c76c9b673d04)
+
+running 36 tests
+test all_sessions_can_be_ended_and_refused_form_tokens_are_logged ... ok
+test apply_requires_exact_confirmation ... ok
+test check_config_and_check_logs ... ok
+test cross_field_validation_runs_before_saving ... ok
+test clearing_a_configured_value_is_refused ... ok
+test csrf_read_only_size_and_methods ... ok
+test dry_run_with_payload_download_and_delete ... ok
+test dry_run_as_of_and_bad_date ... ok
+test form_parsing ... ok
+test every_page_renders ... ok
+test gui_can_switch_itself_off_but_never_on ... ok
+test gui_is_off_by_default_and_refuses_to_start ... ok
+test gui_enable_cli_restores_access ... ok
+test local_mode_refuses_foreign_host_header ... ok
+test local_mode_requires_login_link_and_session_cookie ... ok
+test locked_fields_are_shown_readonly_and_cannot_be_changed ... ok
+test login_link_expires_and_wrong_tokens_are_logged ... ok
+test module_pages_without_setup_show_how_and_refuse_saving ... ok
+test module_settings_show_defaults_and_saving_unchanged_keeps_them ... ok
+test non_loopback_requires_trusted_proxy ... ok
+test only_get_and_post_are_answered ... ok
+test output_is_escaped ... ok
+test proxy_mode_checks_source_and_user_header ... ok
+test proxy_mode_has_no_local_sign_out ... ok
+test request_body_limit_is_exactly_64_kib ... ok
+test roles_settings_exceptions_and_access_export ... ok
+test second_run_while_busy_is_refused ... ok
+test health_check_runs_from_the_gui_and_shows_fixes ... ok
+test secrets_are_random_and_compared_safely ... ok
+test sessions_end_after_inactivity_and_after_their_maximum_lifetime ... ok
+test sessions_are_capped_and_the_oldest_ends_first ... ok
+test sign_out_ends_the_session_also_in_read_only_mode ... ok
+test switching_off_in_config_stops_a_running_gui ... ok
+test settings_roundtrip_is_validated_audited_and_reversible ... ok
+test tls_settings_are_shown_locked_and_cannot_be_changed ... ok
+test toggles_can_be_switched_and_new_attributes_added ... ok
+
+test result: ok. 36 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.50s
+
+   Doc-tests afas_entra_sync
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

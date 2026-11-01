@@ -1,7 +1,7 @@
 # Roadmap afas-entra-sync
 
 Recorded 2026-10-31, starting from version 0.1.0 (PoC): employees from one GetConnector,
-a fixed set of attributes, CLI only. Current version: 0.9.3 (OWASP ASVS 5.0 L2 self-assessment and OpenSSF readiness, see docs/security; 0.9.0: optional modules: roles and licences, first sign-in code for new hires (joiners), actions for departing employees (leavers), webhook, access log, exceptions).
+a fixed set of attributes, CLI only. Current version: 0.10.0 (doctor health check, afas-fields, module-setup, readable output, certificate expiry warnings; 0.9.3: OWASP ASVS 5.0 L2 self-assessment and OpenSSF readiness, see docs/security; 0.9.0: optional modules: roles and licences, first sign-in code for new hires (joiners), actions for departing employees (leavers), webhook, access log, exceptions).
 
 Order = proposed build order. Every item ships with tests at the same level as 0.1.0
 (unit, e2e against mocks, property tests, mutation tests).

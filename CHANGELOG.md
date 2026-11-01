@@ -31,6 +31,7 @@ Easier to set up, run and keep running. No configuration changes.
 - **Certificate expiry warnings**: from 30 days before a certificate (provisioning app or
   a module) expires, the report and the GUI overview say so under `notices`; in the last 7
   days an otherwise good run ends with exit 3 so monitoring shows it.
+- The GUI overview of a test run says how many records *would be* sent (it said "sent").
 - Docs: the module setup used a wrong owner (`afas-entra-sync:` instead of the service user
   `afas-sync`) in its `chown` line; replaced by `module-setup`.
 

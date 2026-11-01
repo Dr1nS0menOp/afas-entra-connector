@@ -3,7 +3,7 @@
 Answers for the **passing** level of the [OpenSSF Best Practices
 badge](https://www.bestpractices.dev/criteria/0), ready to enter on bestpractices.dev
 after the repository is public. Replace `<repo>` with the GitHub URL. Last reviewed
-2026-11-01 (version 0.9.3).
+2026-11-01 (version 0.10.0).
 
 Status: **Met** = true today; **On publish** = true as soon as the repository is public on
 GitHub with issues and private vulnerability reporting switched on; **N/A** = does not
@@ -25,7 +25,7 @@ apply.
 | sites_https | MUST | On publish | GitHub (HTTPS only) |
 | discussion | MUST | On publish | GitHub issues and pull requests |
 | english | SHOULD | Met | Code, documentation and messages in English |
-| maintained | MUST | Met | Active development; releases 0.7.0 to 0.9.3 in 2026 |
+| maintained | MUST | Met | Active development; releases 0.7.0 to 0.10.0 in 2026 |
 
 ## Change control
 
@@ -37,7 +37,7 @@ apply.
 | repo_distributed | SUGGESTED | Met | git |
 | version_unique | MUST | Met | Cargo.toml version, `--version` |
 | version_semver | SUGGESTED | Met | Semantic Versioning (CHANGELOG.md) |
-| version_tags | SUGGESTED | Met | `v0.7.0` … `v0.9.3` |
+| version_tags | SUGGESTED | Met | `v0.7.0` … `v0.10.0` |
 | release_notes | MUST | Met | CHANGELOG.md, per release, human-written |
 | release_notes_vulns | MUST | N/A | No publicly known vulnerabilities so far; SECURITY.md commits to naming them |
 
@@ -61,7 +61,7 @@ apply.
 | build | MUST | Met | `cargo build --release` |
 | build_common_tools | SUGGESTED | Met | Cargo |
 | build_floss_tools | SHOULD | Met | Rust toolchain, all FLOSS |
-| test | MUST | Met | 218 automated tests (`cargo test`), documented in README and CONTRIBUTING.md, run in CI |
+| test | MUST | Met | 238 automated tests (`cargo test`), documented in README and CONTRIBUTING.md, run in CI |
 | test_invocation | SHOULD | Met | `cargo test` |
 | test_most | SUGGESTED | Met | Unit, end-to-end against mock AFAS and Microsoft, property and fuzz tests; mutation testing (MUTATION-REPORT.md) |
 | test_continuous_integration | SUGGESTED | Met | `.github/workflows/ci.yml` on every push and pull request |

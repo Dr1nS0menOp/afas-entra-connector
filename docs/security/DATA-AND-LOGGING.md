@@ -1,7 +1,7 @@
 # Data classification and log inventory
 
 Covers OWASP ASVS 5.0 V14.1 (data classification and protection), V14.2.4 (handling rules)
-and V16.1.1 (log inventory). Last reviewed 2026-11-01 (version 0.9.3).
+and V16.1.1 (log inventory). Last reviewed 2026-11-01 (version 0.10.0).
 
 ## Data classes
 

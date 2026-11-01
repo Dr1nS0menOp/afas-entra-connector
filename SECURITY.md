@@ -1,7 +1,7 @@
 # Security
 
 Security design, hardening and verification of afas-entra-sync and the Ansible deployment
-in `deploy/ansible`. Last reviewed 2026-11-01 (version 0.9.3).
+in `deploy/ansible`. Last reviewed 2026-11-01 (version 0.10.0).
 
 ## What runs where
 
