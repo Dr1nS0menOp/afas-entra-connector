@@ -1,0 +1,26 @@
+$ cargo test --no-fail-fast
+     Running unittests src/lib.rs (target/debug/deps/afas_entra_sync-9871b0abb15a7bd9)
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running unittests src/main.rs (target/debug/deps/afas_entra_sync-c0ffd3c39b637016)
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/cli.rs (target/debug/deps/cli-a016eaf43f3c57e0)
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 14.43s
+     Running tests/e2e.rs (target/debug/deps/e2e-5778a2335e133800)
+test result: ok. 39 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.86s
+     Running tests/extra.rs (target/debug/deps/extra-4cb3c80f963430a7)
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+     Running tests/install.rs (target/debug/deps/install-9824f3f57ba7b146)
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.34s
+     Running tests/module_rules.rs (target/debug/deps/module_rules-f154662dc3f44ffc)
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+     Running tests/modules.rs (target/debug/deps/modules-9fd4524c03354b8c)
+test result: ok. 45 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 7.32s
+     Running tests/props.rs (target/debug/deps/props-1a6626a38137bd92)
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 53.82s
+     Running tests/tls.rs (target/debug/deps/tls-f3bdcccea64876b0)
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
+     Running tests/unit.rs (target/debug/deps/unit-7dfc21fa82c05977)
+test result: ok. 38 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
+     Running tests/web.rs (target/debug/deps/web-1bccb8d101a93ffb)
+test result: ok. 35 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.33s
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s

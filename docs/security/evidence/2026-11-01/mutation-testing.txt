@@ -1,0 +1,127 @@
+## mut3 — modules + Graph client, first run (before the new tests)
+caught: 176
+missed: 82
+unviable: 107
+timeout: 3
+missed:
+  src/graph.rs:81:56: replace || with && in Graph<'a>::url
+  src/graph.rs:119:45: replace + with * in Graph<'a>::call
+  src/graph.rs:122:48: replace || with && in Graph<'a>::call
+  src/graph.rs:122:32: replace >= with < in Graph<'a>::call
+  src/graph.rs:122:51: delete ! in Graph<'a>::call
+  src/modules/mod.rs:119:19: replace match guard e.kind() == std::io::ErrorKind::NotFound with true in load_state
+  src/modules/mod.rs:261:9: replace ModulesReport::is_empty -> bool with true
+  src/modules/mod.rs:261:9: replace ModulesReport::is_empty -> bool with false
+  src/modules/joiner.rs:57:45: replace < with == in plan
+  src/modules/joiner.rs:57:45: replace < with > in plan
+  src/modules/joiner.rs:57:45: replace < with <= in plan
+  src/modules/joiner.rs:64:13: delete match arm Some(Found::Conflict(why)) in plan
+  src/modules/joiner.rs:87:42: replace match guard mu.enabled with true in plan
+  src/modules/joiner.rs:87:42: replace match guard mu.enabled with false in plan
+  src/modules/joiner.rs:158:40: replace && with || in mailbox
+  src/modules/joiner.rs:181:37: replace > with == in issue
+  src/modules/joiner.rs:181:37: replace > with < in issue
+  src/modules/joiner.rs:181:37: replace > with >= in issue
+  src/modules/joiner.rs:190:19: replace > with == in issue
+  src/modules/joiner.rs:190:19: replace > with < in issue
+  src/modules/joiner.rs:190:19: replace > with >= in issue
+  src/modules/joiner.rs:204:13: replace && with || in issue
+  src/modules/joiner.rs:244:28: replace + with - in issue
+  src/modules/joiner.rs:292:13: delete field notes from struct ModuleReport expression in run
+  src/modules/joiner.rs:293:13: delete field planned from struct ModuleReport expression in run
+  src/modules/joiner.rs:305:24: replace > with == in run
+  src/modules/joiner.rs:305:24: replace > with >= in run
+  src/modules/leaver.rs:31:41: replace || with && in is_recent_leaver
+  src/modules/leaver.rs:31:17: replace || with && in is_recent_leaver
+  src/modules/leaver.rs:31:33: replace > with == in is_recent_leaver
+  src/modules/leaver.rs:31:33: replace > with >= in is_recent_leaver
+  src/modules/leaver.rs:35:15: replace && with || in is_recent_leaver
+  src/modules/leaver.rs:58:13: delete match arm Some(Found::Conflict(why)) in plan
+  src/modules/leaver.rs:140:23: replace match guard e.status == Some(404) || e.code.contains("MailboxNotEnabled") with true in act
+  src/modules/leaver.rs:140:23: replace match guard e.status == Some(404) || e.code.contains("MailboxNotEnabled") with false in act
+  src/modules/leaver.rs:140:45: replace || with && in act
+  src/modules/leaver.rs:140:32: replace == with != in act
+  src/modules/leaver.rs:159:13: delete field notes from struct ModuleReport expression in run
+  src/modules/leaver.rs:160:13: delete field planned from struct ModuleReport expression in run
+  src/modules/leaver.rs:172:24: replace > with == in run
+  src/modules/leaver.rs:172:24: replace > with >= in run
+  src/modules/roles.rs:29:5: replace check_group -> Result<String, String> with Ok(String::new())
+  src/modules/roles.rs:29:5: replace check_group -> Result<String, String> with Ok("xyzzy".into())
+  src/modules/roles.rs:46:45: replace == with != in check_group
+  src/modules/roles.rs:57:9: delete match arm "job_title" in value_of
+  src/modules/roles.rs:58:9: delete match arm "job_profile" in value_of
+  src/modules/roles.rs:59:9: delete match arm "office" in value_of
+  src/modules/roles.rs:60:9: delete match arm "company" in value_of
+  src/modules/roles.rs:61:9: delete match arm "employee_type" in value_of
+  src/modules/roles.rs:62:9: delete match arm "cost_center" in value_of
+  src/modules/roles.rs:63:9: delete match arm "population" in value_of
+  src/modules/roles.rs:88:21: replace > with == in eligible
+  src/modules/roles.rs:88:21: replace > with < in eligible
+  src/modules/roles.rs:88:21: replace > with >= in eligible
+  src/modules/roles.rs:129:29: replace && with || in plan
+  src/modules/roles.rs:129:20: replace >= with < in plan
+  src/modules/roles.rs:129:32: delete ! in plan
+  src/modules/roles.rs:177:63: replace >= with < in plan
+  src/modules/roles.rs:193:20: delete ! in plan
+  src/modules/roles.rs:296:16: replace match guard e.status == Some(400) && e.message.to_ascii_lowercase().contains("already exist") with true in add_member
+  src/modules/roles.rs:296:16: replace match guard e.status == Some(400) && e.message.to_ascii_lowercase().contains("already exist") with false in add_member
+  src/modules/roles.rs:297:17: replace && with || in add_member
+  src/modules/roles.rs:296:25: replace == with != in add_member
+  src/modules/roles.rs:312:19: replace match guard e.status == Some(404) with true in remove_member
+  src/modules/roles.rs:312:19: replace match guard e.status == Some(404) with false in remove_member
+  src/modules/roles.rs:312:28: replace == with != in remove_member
+  src/modules/roles.rs:349:18: replace > with >= in run
+  src/modules/webhook.rs:83:20: delete ! in detect
+  src/modules/webhook.rs:114:18: replace > with >= in hmac_sha256
+  src/modules/webhook.rs:144:16: replace < with == in secret
+  src/modules/webhook.rs:144:16: replace < with <= in secret
+  src/modules/webhook.rs:172:18: delete ! in run
+  src/modules/webhook.rs:185:27: replace > with == in run
+  src/modules/webhook.rs:185:27: replace > with >= in run
+  src/modules/webhook.rs:186:39: replace - with + in run
+  src/modules/webhook.rs:186:39: replace - with / in run
+  src/modules/webhook.rs:213:45: replace || with && in run
+  src/modules/webhook.rs:240:23: replace += with *= in run
+  src/modules/webhook.rs:242:67: replace += with *= in run
+  src/modules/webhook.rs:246:29: replace += with *= in run
+  src/modules/webhook.rs:256:29: replace += with -= in run
+  src/modules/webhook.rs:256:29: replace += with *= in run
+
+## mut4 — modules + Graph client, after the new tests
+caught: 246
+missed: 9
+unviable: 107
+timeout: 4
+missed:
+  src/graph.rs:81:56: replace || with && in Graph<'a>::url
+  src/modules/joiner.rs:181:37: replace > with >= in issue
+  src/modules/joiner.rs:204:13: replace && with || in issue
+  src/modules/joiner.rs:292:13: delete field notes from struct ModuleReport expression in run
+  src/modules/leaver.rs:31:33: replace > with >= in is_recent_leaver
+  src/modules/leaver.rs:58:13: delete match arm Some(Found::Conflict(why)) in plan
+  src/modules/roles.rs:88:21: replace > with >= in eligible
+  src/modules/webhook.rs:186:39: replace - with / in run
+  src/modules/webhook.rs:240:23: replace += with *= in run
+
+## mut5 — the five remaining gaps, after their tests
+caught: 11
+missed: 0
+unviable: 0
+timeout: 0
+missed:
+
+## mut6 — GUI sign-in and sessions
+caught: 41
+missed: 1
+unviable: 2
+timeout: 0
+missed:
+  src/web.rs:1135:25: replace > with >= in handle
+
+## mut7 — GUI request handler, after the body-limit test
+caught: 12
+missed: 0
+unviable: 1
+timeout: 0
+missed:
+

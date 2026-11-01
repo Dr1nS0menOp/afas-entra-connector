@@ -62,6 +62,22 @@ jobs:
       - name: Shell scripts (shellcheck)
         run: shellcheck -S style install.sh deploy/ansible/checkmk/afas_entra_sync
 
+  evidence:
+    name: Security evidence (OWASP ASVS)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: ASVS assessment up to date and every reference resolves
+        # Fetches the official ASVS 5.0.0 list at the v5.0.0_release tag and checks its SHA-256.
+        run: python3 docs/security/asvs_assessment.py --check
+      - name: Stored scan output unchanged
+        run: |
+          for d in docs/security/evidence/*/; do
+            (cd "$d" && sha256sum -c --quiet SHA256SUMS)
+          done
+
   fuzz:
     name: Fuzz smoke test
     runs-on: ubuntu-24.04

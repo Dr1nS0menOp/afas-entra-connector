@@ -1,0 +1,219 @@
+warning[duplicate]: found 2 duplicate entries for crate 'base64'
+   ┌─ Cargo.lock:13:1
+   │  
+13 │ ╭ base64 0.22.1 registry+https://github.com/rust-lang/crates.io-index
+14 │ │ base64 0.23.1 registry+https://github.com/rust-lang/crates.io-index
+   │ ╰───────────────────────────────────────────────────────────────────┘ lock entries
+   │  
+   ├ base64 v0.22.1
+     ├── jsonwebtoken v11.1.0
+     │   └── afas-entra-sync v0.9.3
+     └── pem v3.0.6
+         └── jsonwebtoken v11.1.0 (*)
+   ├ base64 v0.23.1
+     ├── afas-entra-sync v0.9.3
+     ├── hyper-util v0.1.21
+     │   ├── hyper-rustls v0.27.10
+     │   │   └── reqwest v0.13.5
+     │   │       └── afas-entra-sync v0.9.3 (*)
+     │   ├── mockito v1.7.2
+     │   │   └── (dev) afas-entra-sync v0.9.3 (*)
+     │   └── reqwest v0.13.5 (*)
+     ├── pem v4.0.0
+     │   ├── afas-entra-sync v0.9.3 (*)
+     │   └── rcgen v0.14.10
+     │       └── afas-entra-sync v0.9.3 (*)
+     └── reqwest v0.13.5 (*)
+
+warning[duplicate]: found 2 duplicate entries for crate 'pem'
+    ┌─ Cargo.lock:104:1
+    │  
+104 │ ╭ pem 3.0.6 registry+https://github.com/rust-lang/crates.io-index
+105 │ │ pem 4.0.0 registry+https://github.com/rust-lang/crates.io-index
+    │ ╰───────────────────────────────────────────────────────────────┘ lock entries
+    │  
+    ├ pem v3.0.6
+      └── jsonwebtoken v11.1.0
+          └── afas-entra-sync v0.9.3
+    ├ pem v4.0.0
+      ├── afas-entra-sync v0.9.3
+      └── rcgen v0.14.10
+          └── afas-entra-sync v0.9.3 (*)
+
+warning[duplicate]: found 2 duplicate entries for crate 'syn'
+    ┌─ Cargo.lock:160:1
+    │  
+160 │ ╭ syn 2.0.119 registry+https://github.com/rust-lang/crates.io-index
+161 │ │ syn 3.0.9 registry+https://github.com/rust-lang/crates.io-index
+    │ ╰───────────────────────────────────────────────────────────────┘ lock entries
+    │  
+    ├ syn v2.0.119
+      ├── tracing-attributes v0.1.31
+      │   └── tracing v0.1.44
+      │       ├── afas-entra-sync v0.9.3
+      │       ├── h2 v0.4.20
+      │       │   ├── hyper v1.12.0
+      │       │   │   ├── hyper-rustls v0.27.10
+      │       │   │   │   └── reqwest v0.13.5
+      │       │   │   │       └── afas-entra-sync v0.9.3 (*)
+      │       │   │   ├── hyper-util v0.1.21
+      │       │   │   │   ├── hyper-rustls v0.27.10 (*)
+      │       │   │   │   ├── mockito v1.7.2
+      │       │   │   │   │   └── (dev) afas-entra-sync v0.9.3 (*)
+      │       │   │   │   └── reqwest v0.13.5 (*)
+      │       │   │   ├── mockito v1.7.2 (*)
+      │       │   │   └── reqwest v0.13.5 (*)
+      │       │   └── reqwest v0.13.5 (*)
+      │       └── hyper-util v0.1.21 (*)
+      └── zeroize_derive v1.5.0
+          └── zeroize v1.9.1
+              ├── aws-lc-rs v1.19.0
+              │   ├── afas-entra-sync v0.9.3 (*)
+              │   ├── jsonwebtoken v11.1.0
+              │   │   └── afas-entra-sync v0.9.3 (*)
+              │   ├── rcgen v0.14.10
+              │   │   └── afas-entra-sync v0.9.3 (*)
+              │   ├── rustls v0.23.46
+              │   │   ├── afas-entra-sync v0.9.3 (*)
+              │   │   ├── hyper-rustls v0.27.10 (*)
+              │   │   ├── reqwest v0.13.5 (*)
+              │   │   ├── rustls-platform-verifier v0.7.1
+              │   │   │   ├── afas-entra-sync v0.9.3 (*)
+              │   │   │   └── reqwest v0.13.5 (*)
+              │   │   └── tokio-rustls v0.26.6
+              │   │       ├── hyper-rustls v0.27.10 (*)
+              │   │       └── reqwest v0.13.5 (*)
+              │   └── rustls-webpki v0.103.16
+              │       ├── rustls v0.23.46 (*)
+              │       └── rustls-platform-verifier v0.7.1 (*)
+              ├── jsonwebtoken v11.1.0 (*)
+              ├── rustls v0.23.46 (*)
+              └── rustls-pki-types v1.15.1
+                  ├── rcgen v0.14.10 (*)
+                  ├── reqwest v0.13.5 (*)
+                  ├── rustls v0.23.46 (*)
+                  ├── rustls-native-certs v0.8.5
+                  │   └── rustls-platform-verifier v0.7.1 (*)
+                  └── rustls-webpki v0.103.16 (*)
+    ├ syn v3.0.9
+      ├── clap_derive v4.6.7
+      │   └── clap v4.6.7
+      │       └── afas-entra-sync v0.9.3
+      ├── displaydoc v0.2.7
+      │   ├── icu_collections v2.4.0
+      │   │   ├── icu_normalizer v2.4.0
+      │   │   │   └── idna_adapter v1.2.2
+      │   │   │       └── idna v1.1.0
+      │   │   │           └── url v2.5.8
+      │   │   │               ├── reqwest v0.13.5
+      │   │   │               │   └── afas-entra-sync v0.9.3 (*)
+      │   │   │               └── tower-http v0.6.11
+      │   │   │                   └── reqwest v0.13.5 (*)
+      │   │   └── icu_properties v2.4.0
+      │   │       └── idna_adapter v1.2.2 (*)
+      │   ├── icu_locale_core v2.4.0
+      │   │   ├── icu_properties v2.4.0 (*)
+      │   │   └── icu_provider v2.4.0
+      │   │       ├── icu_normalizer v2.4.0 (*)
+      │   │       └── icu_properties v2.4.0 (*)
+      │   ├── icu_properties v2.4.0 (*)
+      │   ├── icu_provider v2.4.0 (*)
+      │   ├── tinystr v0.8.5
+      │   │   └── icu_locale_core v2.4.0 (*)
+      │   └── zerotrie v0.2.5
+      │       ├── icu_properties v2.4.0 (*)
+      │       └── icu_provider v2.4.0 (*)
+      ├── serde_derive v1.0.229
+      │   └── serde v1.0.229
+      │       ├── afas-entra-sync v0.9.3 (*)
+      │       ├── assert-json-diff v2.0.2
+      │       │   └── mockito v1.7.2
+      │       │       └── (dev) afas-entra-sync v0.9.3 (*)
+      │       ├── chrono v0.4.45
+      │       │   ├── afas-entra-sync v0.9.3 (*)
+      │       │   └── chrono-tz v0.10.4
+      │       │       └── afas-entra-sync v0.9.3 (*)
+      │       ├── jsonwebtoken v11.1.0
+      │       │   └── afas-entra-sync v0.9.3 (*)
+      │       ├── reqwest v0.13.5 (*)
+      │       └── serde_urlencoded v0.7.1
+      │           ├── mockito v1.7.2 (*)
+      │           └── reqwest v0.13.5 (*)
+      ├── synstructure v0.14.0
+      │   ├── yoke-derive v0.8.4
+      │   │   └── yoke v0.8.4
+      │   │       ├── icu_collections v2.4.0 (*)
+      │   │       ├── icu_provider v2.4.0 (*)
+      │   │       ├── zerotrie v0.2.5 (*)
+      │   │       └── zerovec v0.11.9
+      │   │           ├── icu_collections v2.4.0 (*)
+      │   │           ├── icu_locale_core v2.4.0 (*)
+      │   │           ├── icu_normalizer v2.4.0 (*)
+      │   │           ├── icu_properties v2.4.0 (*)
+      │   │           ├── icu_provider v2.4.0 (*)
+      │   │           ├── potential_utf v0.1.6
+      │   │           │   └── icu_collections v2.4.0 (*)
+      │   │           └── tinystr v0.8.5 (*)
+      │   └── zerofrom-derive v0.1.8
+      │       └── zerofrom v0.1.8
+      │           ├── icu_collections v2.4.0 (*)
+      │           ├── icu_provider v2.4.0 (*)
+      │           ├── yoke v0.8.4 (*)
+      │           ├── zerotrie v0.2.5 (*)
+      │           └── zerovec v0.11.9 (*)
+      ├── thiserror-impl v2.0.21
+      │   └── thiserror v2.0.21
+      │       ├── afas-entra-sync v0.9.3 (*)
+      │       └── simple_asn1 v0.6.4
+      │           └── jsonwebtoken v11.1.0 (*)
+      ├── yoke-derive v0.8.4 (*)
+      ├── zerofrom-derive v0.1.8 (*)
+      └── zerovec-derive v0.11.7
+          └── zerovec v0.11.9 (*)
+
+warning[duplicate]: found 2 duplicate entries for crate 'untrusted'
+    ┌─ Cargo.lock:194:1
+    │  
+194 │ ╭ untrusted 0.7.1 registry+https://github.com/rust-lang/crates.io-index
+195 │ │ untrusted 0.9.0 registry+https://github.com/rust-lang/crates.io-index
+    │ ╰─────────────────────────────────────────────────────────────────────┘ lock entries
+    │  
+    ├ untrusted v0.7.1
+      └── aws-lc-rs v1.19.0
+          ├── afas-entra-sync v0.9.3
+          ├── jsonwebtoken v11.1.0
+          │   └── afas-entra-sync v0.9.3 (*)
+          ├── rcgen v0.14.10
+          │   └── afas-entra-sync v0.9.3 (*)
+          ├── rustls v0.23.46
+          │   ├── afas-entra-sync v0.9.3 (*)
+          │   ├── hyper-rustls v0.27.10
+          │   │   └── reqwest v0.13.5
+          │   │       └── afas-entra-sync v0.9.3 (*)
+          │   ├── reqwest v0.13.5 (*)
+          │   ├── rustls-platform-verifier v0.7.1
+          │   │   ├── afas-entra-sync v0.9.3 (*)
+          │   │   └── reqwest v0.13.5 (*)
+          │   └── tokio-rustls v0.26.6
+          │       ├── hyper-rustls v0.27.10 (*)
+          │       └── reqwest v0.13.5 (*)
+          └── rustls-webpki v0.103.16
+              ├── rustls v0.23.46 (*)
+              └── rustls-platform-verifier v0.7.1 (*)
+    ├ untrusted v0.9.0
+      └── rustls-webpki v0.103.16
+          ├── rustls v0.23.46
+          │   ├── afas-entra-sync v0.9.3
+          │   ├── hyper-rustls v0.27.10
+          │   │   └── reqwest v0.13.5
+          │   │       └── afas-entra-sync v0.9.3 (*)
+          │   ├── reqwest v0.13.5 (*)
+          │   ├── rustls-platform-verifier v0.7.1
+          │   │   ├── afas-entra-sync v0.9.3 (*)
+          │   │   └── reqwest v0.13.5 (*)
+          │   └── tokio-rustls v0.26.6
+          │       ├── hyper-rustls v0.27.10 (*)
+          │       └── reqwest v0.13.5 (*)
+          └── rustls-platform-verifier v0.7.1 (*)
+
+advisories ok, bans ok, licenses ok, sources ok

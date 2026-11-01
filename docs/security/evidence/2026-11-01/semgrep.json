@@ -1,0 +1,159 @@
+{
+ "version": "1.183.0",
+ "results": [],
+ "errors": [],
+ "paths": {
+  "scanned": [
+   ".github/dependabot.yml",
+   ".github/workflows/ci.yml",
+   ".github/workflows/codeql.yml",
+   ".github/workflows/release.yml",
+   ".github/workflows/scorecard.yml",
+   "deploy/ansible/README.md",
+   "deploy/ansible/checkmk/afas_entra_sync",
+   "deploy/ansible/files/.gitkeep",
+   "deploy/ansible/install-afas-entra-sync.yml",
+   "deploy/ansible/run-afas-entra-sync.yml",
+   "deploy/ansible/run-check-logs.yml",
+   "deploy/ansible/templates/afas-entra-sync-gui.service.j2",
+   "deploy/ansible/templates/afas-entra-sync.toml.j2",
+   "deploy/ansible/vars.example.yml",
+   "fuzz/fuzz_targets/afas_response.rs",
+   "fuzz/fuzz_targets/config.rs",
+   "fuzz/fuzz_targets/gui_request.rs",
+   "fuzz/fuzz_targets/small_parsers.rs",
+   "install.sh",
+   "src/afas.rs",
+   "src/config.rs",
+   "src/entra.rs",
+   "src/error.rs",
+   "src/graph.rs",
+   "src/http.rs",
+   "src/install.rs",
+   "src/lib.rs",
+   "src/main.rs",
+   "src/model.rs",
+   "src/modules/joiner.rs",
+   "src/modules/leaver.rs",
+   "src/modules/mod.rs",
+   "src/modules/records.rs",
+   "src/modules/roles.rs",
+   "src/modules/settings.rs",
+   "src/modules/webhook.rs",
+   "src/plan.rs",
+   "src/scim.rs",
+   "src/state.rs",
+   "src/sync.rs",
+   "src/tls.rs",
+   "src/web.rs"
+  ]
+ },
+ "time": {
+  "rules": [],
+  "rules_parse_time": 0.2790720462799072,
+  "profiling_times": {
+   "config_time": 24.474855422973633,
+   "core_time": 26.844050645828247,
+   "ignores_time": 0.0007774829864501953,
+   "total_time": 51.33727407455444
+  },
+  "parsing_time": {
+   "total_time": 3.4893553256988525,
+   "per_file_time": {
+    "mean": 0.026841194813068094,
+    "std_dev": 0.014260242186875553
+   },
+   "very_slow_stats": {
+    "time_ratio": 0.46220138449078696,
+    "count_ratio": 0.015384615384615385
+   },
+   "very_slow_files": [
+    {
+     "fpath": "src/modules/joiner.rs",
+     "ftime": 0.3672459125518799
+    },
+    {
+     "fpath": "src/web.rs",
+     "ftime": 1.2455389499664307
+    }
+   ]
+  },
+  "scanning_time": {
+   "total_time": 10.203167915344238,
+   "per_file_time": {
+    "mean": 0.08363252389626427,
+    "std_dev": 0.05944692984510907
+   },
+   "very_slow_stats": {
+    "time_ratio": 0.18059079446034915,
+    "count_ratio": 0.00819672131147541
+   },
+   "very_slow_files": [
+    {
+     "fpath": ".github/workflows/ci.yml",
+     "ftime": 1.8425981998443604
+    }
+   ]
+  },
+  "matching_time": {
+   "total_time": 0.8863532543182373,
+   "per_file_and_rule_time": {
+    "mean": 0.0068181019562941324,
+    "std_dev": 0.0013889547492821992
+   },
+   "very_slow_stats": {
+    "time_ratio": 0.8614847880440119,
+    "count_ratio": 0.03076923076923077
+   },
+   "very_slow_rules_on_files": [
+    {
+     "fpath": "src/main.rs",
+     "rule_id": "rust.lang.security.current-exe",
+     "time": 0.10522699356079102
+    },
+    {
+     "fpath": "deploy/ansible/checkmk/afas_entra_sync",
+     "rule_id": "bash.curl.security.curl-eval",
+     "time": 0.14642095565795898
+    },
+    {
+     "fpath": "install.sh",
+     "rule_id": "bash.curl.security.curl-eval",
+     "time": 0.1501309871673584
+    },
+    {
+     "fpath": "src/install.rs",
+     "rule_id": "rust.lang.security.insecure-hashes",
+     "time": 0.3618009090423584
+    }
+   ]
+  },
+  "tainting_time": {
+   "total_time": 0.005132198333740234,
+   "per_def_and_rule_time": {
+    "mean": 0.0017107327779134114,
+    "std_dev": 6.408784858851706e-07
+   },
+   "very_slow_stats": {
+    "time_ratio": 0.0,
+    "count_ratio": 0.0
+   },
+   "very_slow_rules_on_defs": []
+  },
+  "fixpoint_timeouts": [],
+  "prefiltering": {
+   "project_level_time": 0.0,
+   "file_level_time": 0.0,
+   "rules_with_project_prefilters_ratio": 0.0,
+   "rules_with_file_prefilters_ratio": 0.9874910284015175,
+   "rules_selected_ratio": 0.02378755254793397,
+   "rules_matched_ratio": 0.02378755254793397
+  },
+  "targets": [],
+  "total_bytes": 0,
+  "max_memory_bytes": 329033920
+ },
+ "engine_requested": "OSS",
+ "skipped_rules": [],
+ "profiling_results": []
+}

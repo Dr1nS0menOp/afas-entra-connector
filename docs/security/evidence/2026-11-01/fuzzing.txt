@@ -1,0 +1,43 @@
+# cargo-fuzz 0.13.2 on rustc 1.101.0-nightly (2026-10-27), libFuzzer with AddressSanitizer
+# command: cargo +nightly fuzz run -O <target> corpus/<target> -- -max_total_time=<s> -rss_limit_mb=2048
+
+## run 1 (180 s each) — before the date parser fix
+=== afas_response
+thread '<unnamed>' (9445) panicked at src/model.rs:340:17:
+==9445== ERROR: libFuzzer: deadly signal
+SUMMARY: libFuzzer: deadly signal
+artifact_prefix='fuzz/artifacts/afas_response/'; Test unit written to fuzz/artifacts/afas_response/crash-11f98a9151702257aa5b199eac44f4b2def77e8c
+stat::number_of_executed_units: 1013895
+stat::peak_rss_mb:              655
+	artifacts/afas_response/crash-11f98a9151702257aa5b199eac44f4b2def77e8c
+	cargo fuzz run -O afas_response artifacts/afas_response/crash-11f98a9151702257aa5b199eac44f4b2def77e8c
+=== config
+Done 123330 runs in 181 second(s)
+stat::number_of_executed_units: 123330
+stat::peak_rss_mb:              393
+=== small_parsers
+Done 2159850 runs in 181 second(s)
+stat::number_of_executed_units: 2159850
+stat::peak_rss_mb:              540
+=== gui_request
+Done 46062 runs in 181 second(s)
+stat::number_of_executed_units: 46062
+stat::peak_rss_mb:              366
+
+[exited with code 0]
+
+## run 2 — afas_response, 300 s, after the fix
+Done 7058722 runs in 301 second(s)
+stat::number_of_executed_units: 7058722
+
+[exited with code 0]
+
+## run 3 (180 s each) — after the GUI session changes
+=== gui_request
+Done 36207 runs in 181 second(s)
+stat::number_of_executed_units: 36207
+=== small_parsers
+Done 1758108 runs in 181 second(s)
+stat::number_of_executed_units: 1758108
+
+[exited with code 0]

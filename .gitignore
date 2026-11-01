@@ -3,3 +3,4 @@
 /deploy/ansible/files/afas-entra-sync-linux-x86_64.sha256
 *.tar.gz
 *.cdx.json
+!docs/security/evidence/**/*.cdx.json
