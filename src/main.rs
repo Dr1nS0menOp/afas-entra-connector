@@ -30,10 +30,10 @@ enum Cmd {
     CheckConfig,
     /// Fetch AFAS, build the plan and (with --apply) upload to Entra.
     Sync {
-        /// Actually upload. Without this flag: dry-run only.
+        /// Actually upload. Without this flag: test run (dry-run), nothing is sent or changed.
         #[arg(long)]
         apply: bool,
-        /// Dry-run as if it is this date (YYYY-MM-DD). Cannot be combined with --apply.
+        /// Test run (dry-run) as if it is this date (YYYY-MM-DD). Cannot be combined with --apply.
         #[arg(long)]
         as_of: Option<NaiveDate>,
         /// Deliberately proceed when the disable threshold is hit.

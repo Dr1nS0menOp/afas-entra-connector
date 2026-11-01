@@ -1,7 +1,7 @@
 # Roadmap afas-entra-sync
 
 Recorded 2026-10-31, starting from version 0.1.0 (PoC): employees from one GetConnector,
-a fixed set of attributes, CLI only. Current version: 0.9.0 (optional modules: roles and licences, joiner Temporary Access Pass, leaver actions, webhook, access log, exceptions).
+a fixed set of attributes, CLI only. Current version: 0.9.1 (plain-language texts; 0.9.0: optional modules: roles and licences, first sign-in code for new hires (joiners), actions for departing employees (leavers), webhook, access log, exceptions).
 
 Order = proposed build order. Every item ships with tests at the same level as 0.1.0
 (unit, e2e against mocks, property tests, mutation tests).
@@ -46,7 +46,7 @@ Entra; see README.
 | B | HR links job profiles to AFAS user groups; native AFAS integration | No code; HR manages it | Depends on the AFAS integration; it matches on UPN and runs from the AFAS cloud |
 | C | Tool manages membership of cloud groups through Graph, from a job profile → group mapping | Fully in our hands, same safety model (thresholds, dry-run) | Tool needs `GroupMember.ReadWrite.All`; cloud groups only; more build and test work |
 
-- Option C is the `[roles]` module (0.9.0), with the safeguards below, SoD rules and exceptions. A and C can be combined per group.
+- Option C is the `[roles]` module (0.9.0), with the safeguards below, conflicting groups (segregation of duties) and exceptions. A and C can be combined per group.
 - With C: only manage groups with a fixed prefix, never role-assignable, mail-enabled or
   on-prem groups; threshold on membership changes per run.
 
@@ -85,11 +85,11 @@ Coverage of what commercial AFAS → Entra/AD connectors usually offer:
 | Capability | Status |
 | --- | --- |
 | Accounts create/update/disable from AFAS (AD and cloud) | Core, since 0.1.0 |
-| Prehire accounts, leaver window, populations | Core, since 0.3.0 |
-| Groups and licences from HR data, with SoD and exceptions | `[roles]`, 0.9.0 |
-| First sign-in without a password (Temporary Access Pass to the manager) | `[joiner]`, 0.9.0 |
-| Leaver: revoke sessions, automatic reply | `[leaver]`, 0.9.0 |
-| ITSM tickets / workflows on joiner, mover, leaver | `[webhook]`, 0.9.0 |
+| Accounts before the start date (pre-hires), window after the end date, staff categories (populations) | Core, since 0.3.0 |
+| Groups and licences from HR data, with conflicting groups (SoD) and exceptions | `[roles]`, 0.9.0 |
+| New hires (joiners): first sign-in without a password (Temporary Access Pass to the manager) | `[joiner]`, 0.9.0 |
+| Departing employees (leavers): sign out everywhere, automatic reply | `[leaver]`, 0.9.0 |
+| ITSM tickets / workflows for new hires, job changes, departing employees | `[webhook]`, 0.9.0 |
 | Access history and export for audits | Access log + `report`, 0.9.0 |
 | Admin GUI, audit log | 0.5.0 |
 | Mailbox to shared mailbox | Through the webhook (no Graph API) |

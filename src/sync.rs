@@ -113,7 +113,7 @@ pub fn run(
             } else if attention {
                 (
                     exit::COMPLETED_WITH_EXCLUSIONS,
-                    "ok, but records need attention (see exclusions / disappeared_while_active / modules)",
+                    "ok, but records need attention: skipped records (exclusions), employees missing from AFAS while active (disappeared_while_active) or module notes (modules)",
                 )
             } else {
                 (exit::OK, "ok")

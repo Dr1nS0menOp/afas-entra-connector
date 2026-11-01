@@ -55,8 +55,8 @@ job_id = "API2AD.00000000000000000000000000000000.00000000-0000-0000-0000-000000
 [policy]
 timezone = "Europe/Amsterdam"
 allowed_upn_domains = ["example.com"]
-prehire_days = 14            # create the (disabled) account this many days before the start date
-leaver_lookback_days = 30    # keep sending leavers as 'disabled' this many days after their end date
+prehire_days = 14            # new hires (pre-hires): create the disabled account this many days before the start date
+leaver_lookback_days = 30    # keep sending departing employees (leavers) as 'disabled' this many days after their end date
 min_records = 50             # fewer to send = stop
 max_drop_percent = 10        # drop vs. the last successful run larger than this = stop
 max_disables_per_run = 10    # more new disables = stop (to proceed: --allow-mass-disable)
@@ -75,9 +75,9 @@ max_retry_after_secs = 600
 [state]
 dir = "/var/lib/afas-entra-sync"
 
-# Population. Leave out for the regular employee config; for contractors/externals/interns
+# Staff category (population). Leave out for the regular employee config; for contractors/externals/interns
 # use a separate config (own connector, own state.dir) with for example:
-# [population]
+# [population]                # staff category
 # name = "contractors"
 # id_prefix = "CTR-"
 # employee_type = "Contractor"
@@ -106,7 +106,7 @@ enabled = false
 # private_key_pem = "/etc/afas-entra-sync/roles-key.pem"
 # group_prefix = "AFAS-"            # every managed group must start with this
 # include_prehires = false          # true = groups (and licences) before the start date
-# keep_leavers_days = 0             # keep leavers in their groups this many days
+# keep_leavers_days = 0             # keep departing employees (leavers) in their groups this many days
 # remove_unknown_members = false    # leave admin/service accounts in managed groups alone
 # max_changes_per_run = 50
 #
@@ -129,7 +129,7 @@ enabled = false
 # name = "Pay and approve"
 # groups = ["22222222-2222-2222-2222-222222222222", "33333333-3333-3333-3333-333333333333"]
 
-# Joiners: Temporary Access Pass for the first sign-in, mailed to the manager.
+# New hires (joiners): first sign-in code (Temporary Access Pass), mailed to the manager.
 # Permissions: UserAuthMethod-TAP.ReadWrite.All, User.Read.All, and Mail.Send scoped to
 # the sender mailbox with Exchange RBAC for Applications (see docs/MODULES.md).
 # [joiner]
@@ -146,7 +146,8 @@ enabled = false
 # usable_once = false
 # max_per_run = 20
 
-# Leavers: sign out everywhere and set an automatic reply after the end date.
+# Departing employees (leavers): sign out on every device and set an automatic reply
+# after the end date.
 # Permissions: User.RevokeSessions.All, User.Read.All, MailboxSettings.ReadWrite.
 # [leaver]
 # enabled = true
@@ -159,7 +160,8 @@ enabled = false
 # grace_days = 7
 # max_per_run = 10
 
-# Webhook: signed joiner/mover/leaver events for an ITSM tool or Power Automate.
+# Webhook: signed events for new hires (joiner), job changes (mover) and departing
+# employees (leaver), for an ITSM tool or Power Automate.
 # [webhook]
 # enabled = true
 # url = "https://itsm.example.com/hooks/afas"

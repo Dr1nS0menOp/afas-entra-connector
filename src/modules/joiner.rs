@@ -62,12 +62,15 @@ pub fn plan(
         let u = match found.get(&p.employee_id) {
             Some(Found::User(u)) => u,
             Some(Found::Conflict(why)) => {
-                notes.push(format!("{}: no pass, {why}", p.employee_id));
+                notes.push(format!(
+                    "{}: new hire (joiner) gets no first sign-in code, {why}",
+                    p.employee_id
+                ));
                 continue;
             }
             _ => {
                 notes.push(format!(
-                    "{}: no pass yet, the account is not in Entra yet (retried next run)",
+                    "{}: new hire (joiner) gets no first sign-in code yet, the account is not in Entra yet (retried next run)",
                     p.employee_id
                 ));
                 continue;
@@ -87,7 +90,7 @@ pub fn plan(
         };
         let Some(to) = to else {
             notes.push(format!(
-                "{}: no pass, the manager has no email address and no fixed_address is set",
+                "{}: new hire (joiner) gets no first sign-in code, the manager has no email address and no fixed_address is set",
                 p.employee_id
             ));
             continue;
@@ -190,7 +193,10 @@ fn issue(g: &Graph<'_>, ctx: &Ctx<'_>, cfg: &JoinerConfig, it: &TapItem) -> GRes
             );
         }
         return Err(GraphError {
-            message: format!("mail not sent, pass removed again: {}", e.message),
+            message: format!(
+                "mail not sent, first sign-in code (Temporary Access Pass) removed again: {}",
+                e.message
+            ),
             ..e
         });
     }
@@ -223,7 +229,7 @@ pub fn run(ctx: &Ctx<'_>, cfg: &JoinerConfig, state: &mut ModuleState) -> Module
         };
         if items.len() > cfg.max_per_run as usize {
             rep.violations.push(format!(
-                "{} passes planned, maximum is {}; none issued",
+                "{} first sign-in codes planned, maximum is {}; none sent",
                 items.len(),
                 cfg.max_per_run
             ));

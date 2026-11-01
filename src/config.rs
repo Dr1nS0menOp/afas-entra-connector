@@ -7,7 +7,7 @@ use crate::error::{AppError, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
     pub afas: AfasConfig,
@@ -57,7 +57,7 @@ pub enum PostQuantum {
     Require,
 }
 
-#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, Deserialize, serde::Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct TlsConfig {
     /// `"1.3"` (default) or `"1.2"`.
@@ -68,7 +68,7 @@ pub struct TlsConfig {
     pub post_quantum: PostQuantum,
 }
 
-#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Deserialize, serde::Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct GuiConfig {
     /// Master switch. `false` (default): `serve` does not start, and a running GUI stops.
@@ -78,7 +78,7 @@ pub struct GuiConfig {
 
 /// Settings that distinguish a population. Each population runs as its own
 /// config with its own GetConnector, its own `state.dir` and preferably its own provisioning app.
-#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Deserialize, serde::Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct PopulationConfig {
     /// Name in report and logs, e.g. "contractors".
@@ -90,7 +90,7 @@ pub struct PopulationConfig {
     pub employee_type: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct AfasConfig {
     /// E.g. `https://12345.rest.afas.online/ProfitRestServices`
@@ -114,7 +114,7 @@ pub struct AfasConfig {
 }
 
 /// Mapping between our data model and the field names in the AFAS GetConnector.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct FieldMap {
     pub employee_id: String,
@@ -139,14 +139,14 @@ pub struct FieldMap {
 }
 
 /// One optional attribute: only read and sent with `enabled = true`.
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Deserialize, serde::Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Toggle {
     pub enabled: bool,
     pub field: String,
 }
 
-#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Deserialize, serde::Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct ExtraFields {
     /// Work phone number → SCIM phoneNumbers[type=work].
@@ -272,6 +272,8 @@ pub struct Layers {
     pub overrides: toml::Table,
     pub merged: toml::Table,
     pub config: Config,
+    /// `merged` plus every default the program fills in (for display in the GUI).
+    pub effective: toml::Table,
 }
 
 /// Names of all toggles, in fixed order (also for the GUI).
@@ -373,14 +375,14 @@ impl FieldMap {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Deserialize, serde::Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum AuthMode {
     Certificate,
     ClientSecret,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct EntraConfig {
     pub tenant_id: String,
@@ -404,7 +406,7 @@ pub struct EntraConfig {
     pub timeout_secs: u64,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct PolicyConfig {
     #[serde(default = "default_tz")]
@@ -427,7 +429,7 @@ pub struct PolicyConfig {
     pub max_calls_per_run: u32,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct UploadConfig {
     /// Records per bulkUpload call (1..=50).
@@ -464,7 +466,7 @@ impl Default for UploadConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct StateConfig {
     /// Directory for state, lock and report.
@@ -550,11 +552,14 @@ impl Config {
             AppError::Config(m) => AppError::Config(format!("after applying overrides.toml: {m}")),
             other => other,
         })?;
+        let effective = toml::Table::try_from(&config)
+            .map_err(|e| AppError::Internal(format!("effective config: {e}")))?;
         Ok(Layers {
             base,
             overrides,
             merged,
             config,
+            effective,
         })
     }
 

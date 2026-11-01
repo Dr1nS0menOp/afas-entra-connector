@@ -164,7 +164,7 @@ pub fn plan(
                     let hits = want.intersection(&set).count();
                     if hits >= 2 {
                         out.notes.push(format!(
-                            "segregation of duties '{}': {} would be in {} of its groups; their membership of these groups is left unchanged",
+                            "conflicting groups (segregation of duties) '{}': {} would be in {} of its groups; their membership of these groups is left unchanged",
                             s.name, p.employee_id, hits
                         ));
                         for g in &set {
@@ -176,7 +176,7 @@ pub fn plan(
                         }
                     } else if have.intersection(&set).count() >= 2 {
                         out.notes.push(format!(
-                            "segregation of duties '{}': {} is already in {} of its groups (outside the rules)",
+                            "conflicting groups (segregation of duties) '{}': {} is already in {} of its groups (outside the rules)",
                             s.name,
                             p.employee_id,
                             have.intersection(&set).count()

@@ -494,7 +494,7 @@ fn dry_run_with_payload_download_and_delete() {
         "{overview}"
     );
     let audit = std::fs::read_to_string(e.state("audit.log")).unwrap();
-    for w in ["dry-run", "payload downloaded", "payload deleted"] {
+    for w in ["test run", "payload downloaded", "payload deleted"] {
         assert!(audit.contains(w), "{w}");
     }
     assert!(!e.state("state.json").exists(), "dry-run writes no state");
@@ -900,7 +900,7 @@ fn roles_settings_exceptions_and_access_export() {
     assert!(
         get(&a, "/access?employee=00001")
             .text()
-            .contains("add to group")
+            .contains("added to group")
     );
     assert!(
         !get(&a, "/access?employee=99999")
@@ -918,4 +918,68 @@ fn roles_settings_exceptions_and_access_export() {
     ] {
         assert!(audit.contains(w), "{w}");
     }
+}
+
+/// Keys left out of the config file show their default, and saving the page unchanged
+/// changes nothing (before 0.9.1 an absent `revoke_sessions = true` showed as off and was
+/// saved as false).
+#[test]
+fn module_settings_show_defaults_and_saving_unchanged_keeps_them() {
+    let e = env("http://127.0.0.1:1");
+    let dir = e.cfg_path.parent().unwrap().to_path_buf();
+    let toml = std::fs::read_to_string(&e.cfg_path).unwrap()
+        + &format!(
+            "\n[leaver]\nenabled = true\nclient_id = \"c0000000-0000-0000-0000-000000000002\"\ncertificate_pem = \"{}\"\nprivate_key_pem = \"{}\"\nauto_reply = \"Gone\"\n",
+            fixture("test-cert.pem"),
+            dir.join("test-key.pem").display()
+        );
+    std::fs::write(&e.cfg_path, toml).unwrap();
+    let a = app(&e, false, None);
+    let page = get(&a, "/settings/leaver").text();
+    assert!(
+        page.contains("name=\"leaver.revoke_sessions\" checked"),
+        "{page}"
+    );
+    assert!(
+        page.contains("name=\"leaver.grace_days\" value=\"7\""),
+        "{page}"
+    );
+    assert!(
+        page.contains("name=\"leaver.max_per_run\" value=\"10\""),
+        "{page}"
+    );
+    assert!(page.contains("Departing employees (leavers)"));
+    // Save exactly what the page shows: nothing changes, no override is written.
+    let same = format!(
+        "{}&leaver.enabled=on&leaver.revoke_sessions=on&leaver.auto_reply=Gone&leaver.grace_days=7&leaver.max_per_run=10",
+        csrf(&a)
+    );
+    let r = post(&a, "/settings/leaver", &same);
+    assert_eq!(r.status, 303, "{}", r.text());
+    assert!(!e.state("overrides.toml").exists());
+    assert!(
+        Config::load(&e.cfg_path)
+            .unwrap()
+            .leaver
+            .unwrap()
+            .revoke_sessions
+    );
+    // Unticking it is a real, saved change.
+    let off = format!(
+        "{}&leaver.enabled=on&leaver.auto_reply=Gone&leaver.grace_days=7&leaver.max_per_run=10",
+        csrf(&a)
+    );
+    assert_eq!(post(&a, "/settings/leaver", &off).status, 303);
+    let ov = std::fs::read_to_string(e.state("overrides.toml")).unwrap();
+    assert!(
+        ov.contains("revoke_sessions = false") && !ov.contains("grace_days"),
+        "{ov}"
+    );
+    assert!(
+        !Config::load(&e.cfg_path)
+            .unwrap()
+            .leaver
+            .unwrap()
+            .revoke_sessions
+    );
 }

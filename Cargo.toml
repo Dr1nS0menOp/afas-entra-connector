@@ -1,6 +1,6 @@
 [package]
 name = "afas-entra-sync"
-version = "0.9.0"
+version = "0.9.1"
 edition = "2024"
 rust-version = "1.89"
 description = "AFAS Profit to Microsoft Entra API-driven inbound provisioning"
