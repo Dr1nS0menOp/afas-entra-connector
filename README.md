@@ -25,7 +25,7 @@ Entra. Safe to run again; `sudo afas-entra-sync uninstall` removes it. Ansible u
 [deploy/ansible](deploy/ansible/README.md) instead.
 
 **Documentation:** step-by-step setup and operation in [docs/GUIDE.md](docs/GUIDE.md),
-the optional modules in [docs/MODULES.md](docs/MODULES.md), security in [SECURITY.md](SECURITY.md), Ansible deployment in
+the optional modules in [docs/MODULES.md](docs/MODULES.md), changes in [CHANGELOG.md](CHANGELOG.md), security in [SECURITY.md](SECURITY.md), Ansible deployment in
 [deploy/ansible](deploy/ansible/README.md).
 
 ## Optional modules: new hires, job changes and departing employees
