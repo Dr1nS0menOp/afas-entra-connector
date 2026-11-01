@@ -154,7 +154,7 @@ pub fn render(t: &str, it: &TapItem, tap: &str, from: &str, until: &str) -> Stri
 }
 
 /// Mailbox address as a URL path segment.
-fn mailbox(addr: &str) -> GResult<&str> {
+pub fn mailbox(addr: &str) -> GResult<&str> {
     if super::settings::is_email(addr) && !addr.contains(['/', '?', '#', '%', '\\']) {
         Ok(addr)
     } else {

@@ -26,7 +26,12 @@ two new configuration checks.
   both check the staff category prefix of the employee number.
 - **Webhook:** a comparison older than 7 days counts as a new baseline, so switching the
   webhook on after a long pause does not send stale events.
-- Tests for the Graph client (retries, Retry-After cap, token refresh, paging, host check).
+- `joiner.sender` may not contain `/ ? # % \` (it is used in a URL path).
+- Tests: the Graph client (retries, Retry-After cap, token refresh, paging, host check,
+  network errors) and every decision rule of the modules at its boundaries. A mutation
+  run on the module code went from 82 to 4 missed mutants, all equivalent
+  (`MUTATION-REPORT.md`). The old test for unsafe groups passed for another reason and
+  now checks the real refusal.
 
 ## 0.9.1 – 2026-11-01
 

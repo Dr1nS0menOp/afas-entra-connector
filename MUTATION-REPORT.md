@@ -43,3 +43,26 @@ The exact limits of all thresholds (`min_records`, `max_drop_percent`,
 all field lengths are pinned down by separate tests.
 
 Line numbers refer to the code at the time of the mutation run (0.1.0).
+
+## Modules and Graph client (0.9.2)
+
+Scope: `graph.rs` and `modules/{mod,roles,joiner,leaver,webhook}.rs`, tested against
+`tests/modules.rs` and `tests/module_rules.rs`. 366 mutants.
+
+The first run missed 82. They pointed to real gaps, now covered by tests: the group
+safety check (the old test passed for another reason), errors when adding or removing
+members, the start time of a first sign-in code, the maximums per run of every module,
+the retry and network-error paths of the Graph client, an HMAC key of exactly 64 bytes,
+an unreadable module state, every role rule criterion, the windows for eligibility and
+departing employees, never deleting a code that is not valid yet, the webhook queue cap
+and its order. The second run: 246 caught, 4 timeouts (endless retry loops, counted as
+caught), 107 unviable.
+
+**4 mutants remain, all equivalent:**
+
+| Mutant | Why accepted |
+| --- | --- |
+| `graph.rs:81` `\|\|` → `&&` (absolute URL check) | An absolute URL joined onto the base stays absolute; the host check that follows refuses other hosts either way |
+| `joiner.rs:181` `>` → `>=` | Equal to the nanosecond: both choices give the same moment |
+| `leaver.rs:31` `>` → `>=` | A start date of today with an end date in the past is refused when the data is read |
+| `roles.rs:88` `>` → `>=` | On the start date someone is active, so this branch is never reached for start = today |

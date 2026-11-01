@@ -340,7 +340,7 @@ pub fn validate(
     }
     if let Some(j) = joiner {
         check_identity("joiner", &j.identity())?;
-        if !is_email(&j.sender) {
+        if !is_email(&j.sender) || j.sender.contains(['/', '?', '#', '%', '\\']) {
             return Err("joiner.sender must be a mailbox address".into());
         }
         match (&j.deliver_to, &j.fixed_address) {

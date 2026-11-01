@@ -257,9 +257,6 @@ impl ModulesReport {
             .into_iter()
             .flatten()
     }
-    pub fn is_empty(&self) -> bool {
-        self.all().next().is_none()
-    }
     pub fn any_error(&self) -> bool {
         self.error.is_some()
             || self

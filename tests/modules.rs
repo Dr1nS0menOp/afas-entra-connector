@@ -118,6 +118,16 @@ impl Env {
             .create()
     }
 
+    /// Replace the AFAS data (before building the config).
+    fn set_rows(&mut self, rows: &[Map<String, Value>]) {
+        self.afas = Server::new();
+        self.afas
+            .mock("GET", "/ProfitRestServices/connectors/Entra_Medewerkers")
+            .match_query(Matcher::Any)
+            .with_body(afas_body(rows))
+            .create();
+    }
+
     fn key(&self) -> String {
         self.dir.path().join("test-key.pem").display().to_string()
     }
@@ -297,11 +307,23 @@ fn roles_threshold_stops_all_changes() {
 
 #[test]
 fn roles_refuse_unsafe_groups() {
-    for (name, extra) in [
-        ("Finance", json!({})),
-        ("AFAS-Admins", json!({"isAssignableToRole": true})),
-        ("AFAS-OnPrem", json!({"onPremisesSyncEnabled": true})),
-        ("AFAS-Dyn", json!({"groupTypes": ["DynamicMembership"]})),
+    for (name, extra, why) in [
+        ("Finance", json!({}), "group_prefix"),
+        (
+            "AFAS-Admins",
+            json!({"isAssignableToRole": true}),
+            "role-assignable",
+        ),
+        (
+            "AFAS-OnPrem",
+            json!({"onPremisesSyncEnabled": true}),
+            "on-premises",
+        ),
+        (
+            "AFAS-Dyn",
+            json!({"groupTypes": ["Unified", "DynamicMembership"]}),
+            "dynamic",
+        ),
     ] {
         let mut env = Env::new();
         let mut g = json!({"id": G_ICT, "displayName": name, "isAssignableToRole": false, "groupTypes": []});
@@ -312,6 +334,15 @@ fn roles_refuse_unsafe_groups() {
             .mock("GET", format!("/v1.0/groups/{G_ICT}").as_str())
             .match_query(Matcher::Any)
             .with_body(g.to_string())
+            .create();
+        // Members are readable: the refusal must come from the group check itself.
+        env.ms
+            .mock(
+                "GET",
+                format!("/v1.0/groups/{G_ICT}/members/microsoft.graph.user").as_str(),
+            )
+            .match_query(Matcher::Any)
+            .with_body(json!({ "value": [] }).to_string())
             .create();
         env.group(G_ALL, "AFAS-All", &[]);
         let none = env
@@ -326,10 +357,8 @@ fn roles_refuse_unsafe_groups() {
         let r = go(&cfg, true);
         none.assert();
         assert_eq!(r.report.exit_code, exit::MODULE_FAILED, "{name}");
-        assert!(
-            r.report.modules.unwrap().roles.unwrap().error.is_some(),
-            "{name}"
-        );
+        let e = r.report.modules.unwrap().roles.unwrap().error.unwrap();
+        assert!(e.contains(why), "{name}: {e}");
     }
 }
 
@@ -1363,6 +1392,41 @@ mod graph_client {
     }
 
     #[test]
+    fn network_errors_retry_a_get_but_never_a_post() {
+        let env = Env::new();
+        let cfg = env.cfg(&env.roles(""));
+        let client = build_client(5, false, &Default::default()).unwrap();
+        let mut e = cfg.entra.clone();
+        e.client_id = M_ROLES.into();
+        let cred = Credential::from_config(&e).unwrap();
+        let slept = RefCell::new(Vec::new());
+        let sleep = |d: Duration| slept.borrow_mut().push(d);
+        let tokens = TokenProvider::new(&e, &client, cred, &sleep);
+        // Nothing listens on port 1.
+        let g = Graph::new("http://127.0.0.1:1/v1.0", &client, tokens, &sleep).unwrap();
+        let err = g.get("users").unwrap_err();
+        assert!(err.outcome_unknown());
+        assert_eq!(g.calls.get(), 5);
+        assert_eq!(slept.borrow().len(), 4);
+        let err = g.call(Method::POST, "users", None).unwrap_err();
+        assert!(err.outcome_unknown());
+        assert_eq!(g.calls.get(), 6, "a POST is tried once");
+        assert_eq!(slept.borrow().len(), 4);
+    }
+
+    #[test]
+    fn calls_are_counted() {
+        let mut env = Env::new();
+        env.ms.mock("GET", "/v1.0/one").with_body("{}").create();
+        let (n, _) = with(&env, |g| {
+            g.get("one").unwrap();
+            g.get("one").unwrap();
+            g.calls.get()
+        });
+        assert_eq!(n, 2);
+    }
+
+    #[test]
     fn object_ids_in_paths_are_guid_characters_only() {
         assert!(seg("b0000000-0000-0000-0000-000000000001").is_ok());
         for bad in ["", "../users", "a/b", "id?x=1", "x y", &"a".repeat(65)] {
@@ -1379,4 +1443,617 @@ mod graph_client {
         let u = EntraUser::from_json(&json!({"id":"x"})).unwrap();
         assert!(!u.enabled);
     }
+}
+
+// ------------------------------------------------------------------ boundaries end-to-end
+
+fn tap_ok(env: &mut Env, uid: &str) -> Mock {
+    env.passes(uid, &[]);
+    env.ms
+        .mock(
+            "POST",
+            format!("/v1.0/users/{uid}/authentication/temporaryAccessPassMethods").as_str(),
+        )
+        .with_status(201)
+        .with_body(r#"{"id":"d0000000-0000-0000-0000-000000000001","temporaryAccessPass":"X"}"#)
+        .create()
+}
+
+#[test]
+fn new_hire_code_is_valid_from_the_start_date_only() {
+    use afas_entra_sync::modules::joiner::valid_from_utc;
+    let ams: chrono_tz::Tz = "Europe/Amsterdam".parse().unwrap();
+    let from = valid_from_utc(ams, plus(1), 6).unwrap();
+    let until = from + chrono::Duration::minutes(600);
+    let local = |d: chrono::DateTime<chrono::Utc>| {
+        d.with_timezone(&ams).format("%Y-%m-%d %H:%M").to_string()
+    };
+    let mut env = Env::new();
+    env.passes(U4, &[]);
+    let tap = env
+        .ms
+        .mock(
+            "POST",
+            format!("/v1.0/users/{U4}/authentication/temporaryAccessPassMethods").as_str(),
+        )
+        .match_body(Matcher::PartialJson(json!({
+            "startDateTime": from.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+            "lifetimeInMinutes": 600
+        })))
+        .with_status(201)
+        .with_body(r#"{"id":"d0000000-0000-0000-0000-000000000001","temporaryAccessPass":"X"}"#)
+        .expect(1)
+        .create();
+    let mail = env
+        .ms
+        .mock("POST", "/v1.0/users/noreply@contoso.nl/sendMail")
+        .match_body(Matcher::AllOf(vec![
+            Matcher::Regex(regex_lite_escape(&local(from))),
+            Matcher::Regex(regex_lite_escape(&local(until))),
+        ]))
+        .with_status(202)
+        .expect(1)
+        .create();
+    let cfg = env.cfg(&joiner_cfg(&env, "manager"));
+    go(&cfg, true);
+    tap.assert();
+    mail.assert();
+}
+
+fn regex_lite_escape(s: &str) -> String {
+    s.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == ' ' {
+                c.to_string()
+            } else {
+                format!("\\{c}")
+            }
+        })
+        .collect()
+}
+
+#[test]
+fn new_hire_after_the_start_date_gets_a_code_valid_now() {
+    let mut env = Env::new();
+    let mut rs = rows();
+    rs[3] = row("00004", minus(1), None);
+    rs[3].insert("Leidinggevende".into(), json!("00001"));
+    env.set_rows(&rs);
+    env.passes(U4, &[]);
+    let tap = env
+        .ms
+        .mock(
+            "POST",
+            format!("/v1.0/users/{U4}/authentication/temporaryAccessPassMethods").as_str(),
+        )
+        .match_request(|r| {
+            let v: Value = serde_json::from_slice(r.body().unwrap()).unwrap();
+            v.get("startDateTime").is_none()
+        })
+        .with_status(201)
+        .with_body(r#"{"id":"d0000000-0000-0000-0000-000000000001","temporaryAccessPass":"X"}"#)
+        .expect(1)
+        .create();
+    env.ms
+        .mock("POST", "/v1.0/users/noreply@contoso.nl/sendMail")
+        .with_status(202)
+        .create();
+    let cfg = env.cfg(&joiner_cfg(&env, "manager"));
+    go(&cfg, true);
+    tap.assert();
+}
+
+#[test]
+fn new_hires_test_run_and_maximum_per_run() {
+    // Two new hires (00002 and 00004).
+    let mut rs = rows();
+    rs[1] = row("00002", plus(1), None);
+    rs[1].insert("Leidinggevende".into(), json!("00001"));
+    // And one whose account is not in Entra yet: a note in the report, not planned.
+    rs.push(row("00009", plus(1), None));
+    let make = |max: u32| {
+        let mut env = Env::new();
+        env.set_rows(&rs);
+        let cfg = env.cfg(&(joiner_cfg(&env, "manager") + &format!("max_per_run = {max}\n")));
+        (env, cfg)
+    };
+    // Test run: planned, nothing sent.
+    let (mut env, cfg) = make(5);
+    let none = env
+        .ms
+        .mock("POST", Matcher::Regex("temporaryAccessPassMethods".into()))
+        .expect(0)
+        .create();
+    let r = go(&cfg, false);
+    none.assert();
+    let j = r.report.modules.unwrap().joiner.unwrap();
+    assert_eq!((j.planned.len(), j.applied), (2, 0), "{j:?}");
+    assert!(
+        j.notes
+            .iter()
+            .any(|n| n.starts_with("00009") && n.contains("not in Entra yet")),
+        "{j:?}"
+    );
+    // One over the maximum: nothing at all.
+    let (mut env, cfg) = make(1);
+    let none = env
+        .ms
+        .mock("POST", Matcher::Regex("temporaryAccessPassMethods".into()))
+        .expect(0)
+        .create();
+    let r = go(&cfg, true);
+    none.assert();
+    assert_eq!(r.report.exit_code, exit::MODULE_GUARD);
+    assert_eq!(
+        r.report.modules.unwrap().joiner.unwrap().violations.len(),
+        1
+    );
+    // Exactly the maximum: both.
+    let (mut env, cfg) = make(2);
+    let t2 = tap_ok(&mut env, U2);
+    let t4 = tap_ok(&mut env, U4);
+    env.ms
+        .mock("POST", "/v1.0/users/noreply@contoso.nl/sendMail")
+        .with_status(202)
+        .expect(2)
+        .create();
+    let r = go(&cfg, true);
+    t2.assert();
+    t4.assert();
+    assert_eq!(r.report.modules.unwrap().joiner.unwrap().applied, 2);
+}
+
+fn leaver_cfg(env: &Env, extra: &str) -> String {
+    format!(
+        "\n[leaver]\nenabled = true\nclient_id = \"{M_LEAVE}\"\ncertificate_pem = \"{}\"\nprivate_key_pem = \"{}\"\nauto_reply = \"Gone.\"\n{extra}",
+        fixture("test-cert.pem"),
+        env.key()
+    )
+}
+
+#[test]
+fn departing_employees_test_run_maximum_and_missing_account() {
+    // Two departing employees (00002, 00003) and one without an Entra account (00009).
+    let mut rs = rows();
+    rs[1] = row("00002", minus(400), Some(minus(1)));
+    rs.push(row("00009", minus(400), Some(minus(1))));
+    let make = |max: u32| {
+        let mut env = Env::new();
+        env.set_rows(&rs);
+        let cfg = env.cfg(&leaver_cfg(&env, &format!("max_per_run = {max}\n")));
+        (env, cfg)
+    };
+    let (mut env, cfg) = make(5);
+    let none = env
+        .ms
+        .mock("POST", Matcher::Regex("revokeSignInSessions".into()))
+        .expect(0)
+        .create();
+    let r = go(&cfg, false);
+    none.assert();
+    let l = r.report.modules.unwrap().leaver.unwrap();
+    assert_eq!(l.planned.len(), 2, "{l:?}");
+    assert!(
+        l.notes
+            .iter()
+            .any(|n| n.starts_with("00009") && n.contains("no account")),
+        "{l:?}"
+    );
+
+    let (mut env, cfg) = make(1);
+    let none = env
+        .ms
+        .mock("POST", Matcher::Regex("revokeSignInSessions".into()))
+        .expect(0)
+        .create();
+    let r = go(&cfg, true);
+    none.assert();
+    assert_eq!(r.report.exit_code, exit::MODULE_GUARD);
+
+    let (mut env, cfg) = make(2);
+    let rev = env
+        .ms
+        .mock("POST", Matcher::Regex("revokeSignInSessions".into()))
+        .with_body("{}")
+        .expect(2)
+        .create();
+    env.ms
+        .mock("PATCH", Matcher::Regex("mailboxSettings".into()))
+        .with_body("{}")
+        .create();
+    let r = go(&cfg, true);
+    rev.assert();
+    assert_eq!(r.report.modules.unwrap().leaver.unwrap().applied, 2);
+}
+
+#[test]
+fn automatic_reply_errors_other_than_no_mailbox_are_failures() {
+    for (status, body, ok) in [
+        (
+            404,
+            r#"{"error":{"code":"ResourceNotFound","message":"x"}}"#,
+            true,
+        ),
+        (
+            400,
+            r#"{"error":{"code":"MailboxNotEnabledForRESTAPI","message":"x"}}"#,
+            true,
+        ),
+        (
+            403,
+            r#"{"error":{"code":"ErrorAccessDenied","message":"x"}}"#,
+            false,
+        ),
+        (
+            400,
+            r#"{"error":{"code":"ErrorInvalidRequest","message":"x"}}"#,
+            false,
+        ),
+    ] {
+        let mut env = Env::new();
+        env.ms
+            .mock(
+                "POST",
+                format!("/v1.0/users/{U3}/revokeSignInSessions").as_str(),
+            )
+            .with_body("{}")
+            .create();
+        env.ms
+            .mock(
+                "PATCH",
+                format!("/v1.0/users/{U3}/mailboxSettings").as_str(),
+            )
+            .with_status(status)
+            .with_body(body)
+            .create();
+        let cfg = env.cfg(&leaver_cfg(&env, ""));
+        let r = go(&cfg, true);
+        let l = r.report.modules.unwrap().leaver.unwrap();
+        assert_eq!(l.failed.is_empty(), ok, "{status} {body}: {l:?}");
+        assert_eq!(l.applied, usize::from(ok), "{status}");
+        let done = load_state(&env.state()).unwrap().leaver_done;
+        assert_eq!(done.contains_key("00003"), ok, "{status}");
+    }
+}
+
+#[test]
+fn group_changes_that_fail_are_failures() {
+    // add: (status, body, counts as done)
+    for (status, body, ok) in [
+        (
+            400,
+            r#"{"error":{"code":"Request_BadRequest","message":"One or more added object references already exist for the following modified properties: 'members'."}}"#,
+            true,
+        ),
+        (
+            400,
+            r#"{"error":{"code":"Request_BadRequest","message":"Invalid object identifier"}}"#,
+            false,
+        ),
+        (
+            403,
+            r#"{"error":{"code":"Authorization_RequestDenied","message":"Insufficient privileges"}}"#,
+            false,
+        ),
+    ] {
+        let mut env = Env::new();
+        env.group(
+            G_ICT,
+            "AFAS-ICT",
+            &[
+                user(U1, Some("00001"), "user00001@contoso.nl"),
+                user(U2, Some("00002"), "user00002@contoso.nl"),
+                user(U3, Some("00003"), "user00003@contoso.nl"),
+            ],
+        );
+        env.group(
+            G_ALL,
+            "AFAS-All",
+            &[
+                user(U2, Some("00002"), "user00002@contoso.nl"),
+                user(U3, Some("00003"), "user00003@contoso.nl"),
+            ],
+        );
+        // Only U1 is missing from AFAS-All: one add.
+        env.ms
+            .mock(
+                "POST",
+                Matcher::Regex(r"^/v1\.0/groups/.*/members/\$ref$".into()),
+            )
+            .with_status(status)
+            .with_body(body)
+            .expect(1)
+            .create();
+        // U2 (HR) leaves AFAS-ICT, U3 (left 2 days ago) leaves both: removals succeed.
+        env.ms
+            .mock(
+                "DELETE",
+                Matcher::Regex(r"^/v1\.0/groups/.*/members/.*/\$ref$".into()),
+            )
+            .with_status(204)
+            .create();
+        let cfg = env.cfg(&env.roles(""));
+        let r = go(&cfg, true);
+        let roles = r.report.modules.unwrap().roles.unwrap();
+        assert_eq!(roles.failed.is_empty(), ok, "{body}: {roles:?}");
+        assert_eq!(r.report.exit_code == exit::MODULE_FAILED, !ok);
+    }
+    // remove: 404 = already gone (fine), 403 = failure
+    for (status, ok) in [(404, true), (403, false)] {
+        let mut env = Env::new();
+        env.group(
+            G_ICT,
+            "AFAS-ICT",
+            &[
+                user(U1, Some("00001"), "user00001@contoso.nl"),
+                user(U2, Some("00002"), "user00002@contoso.nl"),
+            ],
+        );
+        env.group(
+            G_ALL,
+            "AFAS-All",
+            &[
+                user(U1, Some("00001"), "user00001@contoso.nl"),
+                user(U2, Some("00002"), "user00002@contoso.nl"),
+            ],
+        );
+        env.ms
+            .mock(
+                "POST",
+                Matcher::Regex(r"^/v1\.0/groups/.*/members/\$ref$".into()),
+            )
+            .with_status(204)
+            .create();
+        let del = env
+            .ms
+            .mock(
+                "DELETE",
+                format!("/v1.0/groups/{G_ICT}/members/{U2}/$ref").as_str(),
+            )
+            .with_status(status)
+            .with_body(r#"{"error":{"code":"x","message":"y"}}"#)
+            .expect(1)
+            .create();
+        let cfg = env.cfg(&env.roles(""));
+        let r = go(&cfg, true);
+        del.assert();
+        let roles = r.report.modules.unwrap().roles.unwrap();
+        assert_eq!(roles.failed.is_empty(), ok, "{status}: {roles:?}");
+    }
+}
+
+#[test]
+fn group_change_maximum_is_inclusive() {
+    let planned = {
+        let mut env = Env::new();
+        env.group(G_ICT, "AFAS-ICT", &[]);
+        env.group(G_ALL, "AFAS-All", &[]);
+        let cfg = env.cfg(&env.roles(""));
+        go(&cfg, false)
+            .report
+            .modules
+            .unwrap()
+            .roles
+            .unwrap()
+            .planned
+            .len()
+    };
+    assert!(planned >= 2);
+    for (max, guard) in [(planned, false), (planned - 1, true)] {
+        let mut env = Env::new();
+        env.group(G_ICT, "AFAS-ICT", &[]);
+        env.group(G_ALL, "AFAS-All", &[]);
+        env.ms
+            .mock(
+                "POST",
+                Matcher::Regex(r"^/v1\.0/groups/.*/members/\$ref$".into()),
+            )
+            .with_status(204)
+            .expect(if guard { 0 } else { planned })
+            .create();
+        let cfg = env.cfg(&env.roles(&format!("max_changes_per_run = {max}")));
+        let r = go(&cfg, true);
+        assert_eq!(r.report.exit_code == exit::MODULE_GUARD, guard, "max {max}");
+    }
+}
+
+// ------------------------------------------------------------------ webhook limits
+
+fn queued(n: usize) -> afas_entra_sync::modules::ModuleState {
+    use afas_entra_sync::modules::settings::EventKind;
+    use afas_entra_sync::modules::webhook::Event;
+    let mut s = load_state(std::path::Path::new("/nonexistent-dir-for-default")).unwrap();
+    s.outbox = (0..n)
+        .map(|i| Event {
+            id: format!("e{i}"),
+            event: EventKind::Mover,
+            created_utc: "2026-11-01T00:00:00Z".into(),
+            employee_id: format!("{i:05}"),
+            rehire: false,
+            employee: Snapshot::default(),
+            changes: [(
+                "department".to_string(),
+                [Some("HR".to_string()), Some("ICT".to_string())],
+            )]
+            .into_iter()
+            .collect(),
+            attempts: 0,
+        })
+        .collect();
+    s
+}
+
+fn hook_cfg(url: &str, secret_var: &str, extra: &str) -> String {
+    format!("\n[webhook]\nenabled = true\nurl = \"{url}\"\nsecret_env = \"{secret_var}\"\n{extra}")
+}
+
+#[test]
+fn webhook_secret_needs_sixteen_characters() {
+    for (var, secret, ok) in [
+        ("TEST_HOOK_S15", "123456789012345", false),
+        ("TEST_HOOK_S16", "1234567890123456", true),
+    ] {
+        unsafe { std::env::set_var(var, secret) };
+        let mut env = Env::new();
+        afas_entra_sync::modules::save_state(&env.state_mk(), &queued(1)).unwrap();
+        let hook = env
+            .hook
+            .mock("POST", "/hook")
+            .with_status(200)
+            .expect(usize::from(ok))
+            .create();
+        let cfg = env.cfg(&hook_cfg(&format!("{}/hook", env.hook.url()), var, ""));
+        let r = go(&cfg, true);
+        hook.assert();
+        let w = r.report.modules.unwrap().webhook.unwrap();
+        assert_eq!(w.error.is_none(), ok, "{secret}: {w:?}");
+        if ok {
+            assert_eq!(w.applied, 1);
+        }
+    }
+}
+
+#[test]
+fn webhook_sends_in_order_within_its_maximum() {
+    unsafe { std::env::set_var("TEST_HOOK_ORDER", "0123456789abcdef-secret") };
+    // Maximum 1 of 2: one sent, one waits.
+    let mut env = Env::new();
+    afas_entra_sync::modules::save_state(&env.state_mk(), &queued(2)).unwrap();
+    // Any POST counts: exactly one may be sent, and it is the oldest.
+    let first = env
+        .hook
+        .mock("POST", "/hook")
+        .with_status(200)
+        .expect(1)
+        .create();
+    let cfg = env.cfg(&hook_cfg(
+        &format!("{}/hook", env.hook.url()),
+        "TEST_HOOK_ORDER",
+        "max_per_run = 1",
+    ));
+    let r = go(&cfg, true);
+    first.assert();
+    let w = r.report.modules.unwrap().webhook.unwrap();
+    assert_eq!(w.applied, 1);
+    let left = load_state(&env.state()).unwrap().outbox;
+    assert_eq!(
+        left.iter().map(|e| e.id.as_str()).collect::<Vec<_>>(),
+        ["e1"]
+    );
+
+    // The first fails: the second is not tried this run; attempts counted.
+    let mut env = Env::new();
+    afas_entra_sync::modules::save_state(&env.state_mk(), &queued(2)).unwrap();
+    let down = env
+        .hook
+        .mock("POST", "/hook")
+        .with_status(500)
+        .expect(1)
+        .create();
+    let cfg = env.cfg(&hook_cfg(
+        &format!("{}/hook", env.hook.url()),
+        "TEST_HOOK_ORDER",
+        "",
+    ));
+    go(&cfg, true);
+    down.assert();
+    let left = load_state(&env.state()).unwrap().outbox;
+    assert_eq!(
+        left.iter()
+            .map(|e| (e.id.as_str(), e.attempts))
+            .collect::<Vec<_>>(),
+        [("e0", 1), ("e1", 0)]
+    );
+
+    // Receiver unreachable: the same, through the network-error path.
+    let env = Env::new();
+    afas_entra_sync::modules::save_state(&env.state_mk(), &queued(1)).unwrap();
+    let cfg = env.cfg(&hook_cfg("http://127.0.0.1:1/hook", "TEST_HOOK_ORDER", ""));
+    let r = go(&cfg, true);
+    assert_eq!(r.report.exit_code, exit::MODULE_FAILED);
+    assert_eq!(load_state(&env.state()).unwrap().outbox[0].attempts, 1);
+
+    // A test run lists the queue with the changed fields.
+    let mut env = Env::new();
+    afas_entra_sync::modules::save_state(&env.state_mk(), &queued(1)).unwrap();
+    let none = env.hook.mock("POST", "/hook").expect(0).create();
+    let cfg = env.cfg(&hook_cfg(
+        &format!("{}/hook", env.hook.url()),
+        "TEST_HOOK_ORDER",
+        "",
+    ));
+    let r = go(&cfg, false);
+    none.assert();
+    let w = r.report.modules.unwrap().webhook.unwrap();
+    assert_eq!(w.planned[0].detail.as_deref(), Some("department"));
+}
+
+#[test]
+fn webhook_send_queue_is_capped_at_ten_thousand() {
+    unsafe { std::env::set_var("TEST_HOOK_CAP", "0123456789abcdef-secret") };
+    for (n, dropped) in [(10_000, 0), (10_001, 1), (10_002, 2)] {
+        let mut env = Env::new();
+        afas_entra_sync::modules::save_state(&env.state_mk(), &queued(n)).unwrap();
+        env.hook.mock("POST", "/hook").with_status(503).create();
+        let cfg = env.cfg(&hook_cfg(
+            &format!("{}/hook", env.hook.url()),
+            "TEST_HOOK_CAP",
+            "",
+        ));
+        let r = go(&cfg, true);
+        let w = r.report.modules.unwrap().webhook.unwrap();
+        let left = load_state(&env.state()).unwrap().outbox;
+        assert_eq!(left.len(), 10_000);
+        assert_eq!(
+            w.notes.iter().any(|x| x.contains("oldest events dropped")),
+            dropped > 0,
+            "{n}"
+        );
+        // The oldest go first.
+        assert_eq!(left[0].id, format!("e{dropped}"));
+    }
+}
+
+#[test]
+fn a_pass_that_is_not_valid_yet_is_never_deleted() {
+    let mut env = Env::new();
+    let future = "d0000000-0000-0000-0000-0000000000bb";
+    env.ms
+        .mock(
+            "GET",
+            format!("/v1.0/users/{U4}/authentication/temporaryAccessPassMethods").as_str(),
+        )
+        .match_query(Matcher::Any)
+        .with_body(
+            json!({"value":[{"id": future, "isUsable": false, "methodUsabilityReason": "NotYetValid"}]})
+                .to_string(),
+        )
+        .create();
+    let del = env
+        .ms
+        .mock(
+            "DELETE",
+            Matcher::Regex("temporaryAccessPassMethods".into()),
+        )
+        .expect(0)
+        .create();
+    let post = env
+        .ms
+        .mock(
+            "POST",
+            format!("/v1.0/users/{U4}/authentication/temporaryAccessPassMethods").as_str(),
+        )
+        .expect(0)
+        .create();
+    let cfg = env.cfg(&joiner_cfg(&env, "manager"));
+    let r = go(&cfg, true);
+    del.assert();
+    post.assert();
+    let j = r.report.modules.unwrap().joiner.unwrap();
+    assert!(
+        j.notes
+            .iter()
+            .any(|n| n.contains("already has a Temporary Access Pass")),
+        "{j:?}"
+    );
 }
