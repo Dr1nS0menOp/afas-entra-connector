@@ -56,12 +56,15 @@ pub fn plan(
         let u = match found.get(&p.employee_id) {
             Some(Found::User(u)) => u,
             Some(Found::Conflict(why)) => {
-                notes.push(format!("{}: leaver actions skipped, {why}", p.employee_id));
+                notes.push(format!(
+                    "{}: departing employee (leaver) skipped, {why}",
+                    p.employee_id
+                ));
                 continue;
             }
             _ => {
                 notes.push(format!(
-                    "{}: leaver has no account in Entra; nothing to do",
+                    "{}: departing employee (leaver) has no account in Entra; nothing to do",
                     p.employee_id
                 ));
                 continue;
@@ -99,7 +102,7 @@ fn act(g: &Graph<'_>, cfg: &LeaverConfig, it: &LeaverItem) -> GResult<Vec<String
             &format!("users/{uid}/revokeSignInSessions"),
             None,
         )?;
-        done.push("sessions revoked".to_string());
+        done.push("signed out everywhere".to_string());
     }
     if let Some(msg) = &it.reply {
         let body = json!({ "automaticRepliesSetting": {
@@ -148,7 +151,7 @@ pub fn run(ctx: &Ctx<'_>, cfg: &LeaverConfig, state: &mut ModuleState) -> Module
         };
         if items.len() > cfg.max_per_run as usize {
             rep.violations.push(format!(
-                "{} leavers planned, maximum is {}; nothing done",
+                "{} departing employees (leavers) planned, maximum is {}; nothing done",
                 items.len(),
                 cfg.max_per_run
             ));

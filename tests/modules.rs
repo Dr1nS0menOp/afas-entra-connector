@@ -412,7 +412,7 @@ fn roles_exceptions_and_segregation_of_duties() {
     assert!(
         notes
             .iter()
-            .any(|n| n.contains("segregation of duties 'IT vs Finance'")),
+            .any(|n| n.contains("(segregation of duties) 'IT vs Finance'")),
         "{notes:?}"
     );
 }
@@ -517,7 +517,7 @@ fn joiner_removes_the_pass_when_the_mail_fails_and_retries() {
     assert_eq!(r.report.exit_code, exit::MODULE_FAILED);
     assert!(load_state(&env.state()).unwrap().tap_issued.is_empty());
     let log = std::fs::read_to_string(env.state().join("access.log")).unwrap();
-    assert!(log.contains("pass removed again") && !log.contains("Secret#Tap42"));
+    assert!(log.contains("Temporary Access Pass) removed again") && !log.contains("Secret#Tap42"));
 }
 
 // ------------------------------------------------------------------ leaver

@@ -185,8 +185,9 @@ pub fn run(
     if state.outbox.len() > MAX_OUTBOX {
         let drop = state.outbox.len() - MAX_OUTBOX;
         state.outbox.drain(..drop);
-        rep.notes
-            .push(format!("outbox full: {drop} oldest events dropped"));
+        rep.notes.push(format!(
+            "send queue (outbox) full: {drop} oldest events dropped"
+        ));
     }
     rep.planned = state.outbox.iter().map(describe).collect();
     if state.outbox.is_empty() {
@@ -260,8 +261,10 @@ pub fn run(
         }
     }
     if !kept.is_empty() {
-        rep.notes
-            .push(format!("{} events wait for the next run", kept.len()));
+        rep.notes.push(format!(
+            "{} events wait in the send queue (outbox) for the next run",
+            kept.len()
+        ));
     }
     state.outbox = kept;
     rep

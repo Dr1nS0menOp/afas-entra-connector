@@ -536,14 +536,14 @@ static SECTIONS: &[Section] = &[
             ),
             f(
                 "policy.prehire_days",
-                "Days to create in advance",
-                "New employees are created this many days before their start date, disabled.",
+                "Days to create new hires in advance",
+                "New hires (joiners) get their account this many days before the start date, still disabled.",
                 Kind::Int { min: 0, max: 365 },
             ),
             f(
                 "policy.leaver_lookback_days",
-                "Days to keep sending leavers",
-                "How long a leaver is still sent as disabled.",
+                "Days to keep sending departing employees",
+                "How long after the end date a departing employee (leaver) is still sent, as disabled.",
                 Kind::Int { min: 0, max: 365 },
             ),
             f(
@@ -673,13 +673,13 @@ static SECTIONS: &[Section] = &[
             f(
                 "roles.include_prehires",
                 "Groups before the start date",
-                "Licences then start counting before the first working day.",
+                "Also give groups to new hires (pre-hires) before their first working day. Licences then start counting earlier.",
                 Kind::Bool,
             ),
             f(
                 "roles.keep_leavers_days",
-                "Keep leavers in groups (days)",
-                "E.g. to keep a licensed mailbox while it is converted.",
+                "Keep departing employees in groups (days)",
+                "Days after the end date before groups and licences are removed, e.g. to keep a mailbox while it is converted.",
                 Kind::Int { min: 0, max: 365 },
             ),
             f(
@@ -701,15 +701,15 @@ static SECTIONS: &[Section] = &[
     },
     Section {
         slug: "joiner",
-        title: "Joiners",
-        intro: "A Temporary Access Pass for the first sign-in, valid from the start date, mailed to the manager or a fixed address. Sender and recipients are fixed in the config file.",
+        title: "New hires (joiners)",
+        intro: "A one-time sign-in code (Temporary Access Pass) for the first day, valid from the start date, mailed to the manager or a fixed address. The new colleague uses it to sign in and set up MFA; no password is sent. Sender and recipients are fixed in the config file.",
         requires: Some("joiner"),
         fields: &[
             f("joiner.enabled", "Module on", "", Kind::Bool),
             f(
                 "joiner.days_before_start",
-                "Issue days before start",
-                "The pass only works from the start date.",
+                "Send the code days before start",
+                "The code only works from the start date.",
                 Kind::Int { min: 0, max: 14 },
             ),
             f(
@@ -721,7 +721,7 @@ static SECTIONS: &[Section] = &[
             f(
                 "joiner.lifetime_minutes",
                 "Valid for (minutes)",
-                "Also limited by the tenant's TAP policy.",
+                "Also limited by the Temporary Access Pass policy in Entra.",
                 Kind::Int {
                     min: 60,
                     max: 43_200,
@@ -730,8 +730,8 @@ static SECTIONS: &[Section] = &[
             f("joiner.usable_once", "Single use", "", Kind::Bool),
             f(
                 "joiner.max_per_run",
-                "Maximum passes per run",
-                "More: none are issued.",
+                "Maximum codes per run",
+                "More: none are sent.",
                 Kind::Int {
                     min: 1,
                     max: 10_000,
@@ -740,25 +740,30 @@ static SECTIONS: &[Section] = &[
             f(
                 "joiner.subject",
                 "Mail subject",
-                "{display_name} {upn} {start_date}; never {tap}.",
+                "{display_name} {upn} {start_date}; never {tap} (the code).",
                 Kind::Text { max: 200 },
             ),
             f(
                 "joiner.body",
                 "Mail text",
-                "Must contain {tap}. Also {display_name} {upn} {start_date} {valid_from} {valid_until}.",
+                "Must contain {tap} (the code). Also {display_name} {upn} {start_date} {valid_from} {valid_until}.",
                 Kind::LongText { max: 4000 },
             ),
         ],
     },
     Section {
         slug: "leaver",
-        title: "Leavers",
-        intro: "The day after the end date: sign out everywhere and set an automatic reply. The account itself is disabled by provisioning; groups and licences by the roles module.",
+        title: "Departing employees (leavers)",
+        intro: "The day after the end date: sign out on every device and set an automatic reply. The account itself is disabled by the upload to Entra; groups and licences are removed by Roles and licences.",
         requires: Some("leaver"),
         fields: &[
             f("leaver.enabled", "Module on", "", Kind::Bool),
-            f("leaver.revoke_sessions", "Revoke sessions", "", Kind::Bool),
+            f(
+                "leaver.revoke_sessions",
+                "Sign out everywhere (revoke sessions)",
+                "Phones and laptops must sign in again, which fails because the account is disabled.",
+                Kind::Bool,
+            ),
             f(
                 "leaver.auto_reply",
                 "Automatic reply",
@@ -779,7 +784,7 @@ static SECTIONS: &[Section] = &[
             ),
             f(
                 "leaver.max_per_run",
-                "Maximum leavers per run",
+                "Maximum departing employees per run",
                 "More: nothing is done.",
                 Kind::Int {
                     min: 1,
@@ -790,8 +795,8 @@ static SECTIONS: &[Section] = &[
     },
     Section {
         slug: "population",
-        title: "Population",
-        intro: "For contractors, externals and interns: one config per group, recognisable by name and prefix.",
+        title: "Staff category (population)",
+        intro: "For contractors, externals and interns: each category gets its own config, recognisable by name and employee number prefix.",
         requires: None,
         fields: &[
             f(
@@ -990,11 +995,16 @@ fn post_settings(
     }
     let mut ov = l.overrides.clone();
     let mut changed: Vec<String> = Vec::new();
+    // What applies without any GUI change: the config file plus the program defaults.
+    let without_gui = Config::combine(l.base.clone(), toml::Table::new())
+        .map(|x| x.effective)
+        .unwrap_or_default();
     for fld in sec.fields {
         if is_locked(fld.path) {
             continue;
         }
         let base = lookup(&l.base, fld.path);
+        let fallback = base.or_else(|| lookup(&without_gui, fld.path));
         let new = match parse_field(fld, form, base) {
             Ok(Some(v)) => v,
             Ok(None) => continue,
@@ -1005,8 +1015,10 @@ fn post_settings(
                 );
             }
         };
-        let before = lookup(&l.merged, fld.path).cloned();
-        if base == Some(&new) {
+        let before = lookup(&l.merged, fld.path)
+            .or_else(|| lookup(&l.effective, fld.path))
+            .cloned();
+        if fallback == Some(&new) {
             remove_path(&mut ov, fld.path);
         } else {
             set_path(&mut ov, fld.path, new.clone());
@@ -1249,8 +1261,8 @@ fn post_dry_run(app: &App, form: &[(String, String)], user: &str) -> Response {
         Err(e) => return text(500, &e.to_string()),
     };
     let label = match as_of {
-        Some(d) => format!("dry-run as of {d}"),
-        None => "dry-run".into(),
+        Some(d) => format!("test run as of {d}"),
+        None => "test run".into(),
     };
     let dir2 = dir.clone();
     let actor = format!("gui:{user}");
@@ -1470,7 +1482,7 @@ fn get_payload(l: &Layers, user: &str) -> Response {
         }
         Err(_) => text(
             404,
-            "No saved payload. Start a dry-run with 'Keep payload'.",
+            "No saved upload data. Start a test run with 'Keep the data that would be sent'.",
         ),
     }
 }
@@ -1509,7 +1521,7 @@ fn page_overview(app: &App, l: &Layers) -> String {
         .and_then(|d| serde_json::from_slice(&d).ok());
     let Some(r) = rep else {
         b.push_str(
-            "<section class=empty><h2>No runs yet</h2><p>There is no report yet. Start a dry-run to see what the sync would do; nothing is sent to Microsoft.</p>\
+            "<section class=empty><h2>No runs yet</h2><p>There is no report yet. Start a test run (dry-run) to see what the sync would do; nothing is sent to Microsoft.</p>\
              <p><a class=btn href=/run>Go to Run</a></p></section>",
         );
         return layout(app, l, "overview", "Overview", &b);
@@ -1524,14 +1536,14 @@ fn page_overview(app: &App, l: &Layers) -> String {
     let mode = if r["mode"] == "apply" {
         "Sync"
     } else {
-        "Dry-run"
+        "Test run"
     };
     let c = &r["counts"];
     let n = |k: &str| c[k].as_u64().unwrap_or(0);
     // On success the technical result text adds nothing; on failure it is the explanation.
     let detail = match code {
         0 => String::new(),
-        3 => "See the excluded and missing records below.".to_string(),
+        3 => "See the skipped and missing records below.".to_string(),
         _ => r["result"].as_str().unwrap_or("").to_string(),
     };
     let _ = write!(
@@ -1545,11 +1557,15 @@ fn page_overview(app: &App, l: &Layers) -> String {
     // The flow strip: how the AFAS rows were distributed.
     let parts = [
         ("Active", n("sent_active"), "s-active"),
-        ("New, not yet active", n("sent_inactive_prehire"), "s-pre"),
-        ("Left, disabled", n("sent_inactive_leaver"), "s-leave"),
-        ("Excluded", n("excluded_errors"), "s-excl"),
         (
-            "Outside window",
+            "New hires, not started yet",
+            n("sent_inactive_prehire"),
+            "s-pre",
+        ),
+        ("Departed, disabled", n("sent_inactive_leaver"), "s-leave"),
+        ("Skipped (data errors)", n("excluded_errors"), "s-excl"),
+        (
+            "Not sent (outside date window)",
             n("skipped_future_start") + n("skipped_old_leaver"),
             "s-skip",
         ),
@@ -1591,7 +1607,7 @@ fn page_overview(app: &App, l: &Layers) -> String {
     );
     list_section(
         &mut b,
-        "Excluded records",
+        "Skipped records (exclusions)",
         &r["exclusions"],
         &[("employee_id", "Employee number"), ("reason", "Reason")],
     );
@@ -1694,24 +1710,24 @@ fn page_run(app: &App, l: &Layers, error: Option<&str>) -> String {
 
     let _ = write!(
         b,
-        "<section class=action><div><h2>Dry-run</h2><p>Fetches AFAS and shows what the sync would do. Nothing is sent to Microsoft.</p></div>\
+        "<section class=action><div><h2>Test run (dry-run)</h2><p>Fetches AFAS and shows what the sync would do. Nothing is sent to Microsoft and nothing changes.</p></div>\
 <form method=post action=/run/dry><input type=hidden name=csrf value={csrf}>\
 <label>Pretend it is this date <small>optional, YYYY-MM-DD</small><input name=as_of placeholder=2026-12-01 inputmode=numeric{dis}></label>\
-<label class=check><input type=checkbox name=payload{dis}><span>Keep payload for download<small>Contains personal data.</small></span></label>\
-<button{dis}>Start dry-run</button></form></section>"
+<label class=check><input type=checkbox name=payload{dis}><span>Keep the data that would be sent (payload)<small>For download. Contains personal data.</small></span></label>\
+<button{dis}>Start test run</button></form></section>"
     );
     if has_payload {
         let _ = write!(
             b,
-            "<section class=action><div><h2>Saved payload</h2><p>Exactly what Microsoft would receive in the last dry-run. Delete it after use.</p></div>\
-<div class=row><a class=btn href=/payload>Download payload</a><form method=post action=/payload/delete><input type=hidden name=csrf value={csrf}><button class=quiet{dis}>Delete payload</button></form></div></section>"
+            "<section class=action><div><h2>Saved upload data (payload)</h2><p>Exactly what Microsoft would receive in the last test run. Delete it after use.</p></div>\
+<div class=row><a class=btn href=/payload>Download data</a><form method=post action=/payload/delete><input type=hidden name=csrf value={csrf}><button class=quiet{dis}>Delete data</button></form></div></section>"
         );
     }
     let _ = write!(
         b,
         "<section class=\"action danger\"><div><h2>Run sync</h2><p>Sends all employees to Microsoft. Microsoft creates, updates or disables accounts. The safety thresholds still apply.</p></div>\
 <form method=post action=/run/apply><input type=hidden name=csrf value={csrf}>\
-<label class=check><input type=checkbox name=allow_mass_disable{dis}><span>Proceed if the disable threshold is hit<small>Only after checking the list in the dry-run.</small></span></label>\
+<label class=check><input type=checkbox name=allow_mass_disable{dis}><span>Proceed if the disable threshold is hit<small>Only after checking the list in the test run.</small></span></label>\
 <label>Type <b>{CONFIRM_APPLY}</b> to confirm <small>or <b>{CONFIRM_MASS}</b> if you ticked proceed above</small><input name=confirm autocomplete=off{dis}></label>\
 <button class=danger{dis}>Run sync</button></form></section>"
     );
@@ -1752,7 +1768,8 @@ fn page_section(app: &App, l: &Layers, sec: &Section, error: Option<&str>) -> St
     );
     let mut any_override = false;
     for fld in sec.fields {
-        let cur = lookup(&l.merged, fld.path);
+        // Keys left out of the config file show the value the program actually uses.
+        let cur = lookup(&l.merged, fld.path).or_else(|| lookup(&l.effective, fld.path));
         let locked = is_locked(fld.path);
         let from_gui = lookup(&l.overrides, fld.path).is_some();
         any_override |= from_gui;
@@ -1967,7 +1984,7 @@ fn module_status(on: Option<bool>) -> &'static str {
 fn page_modules(app: &App, l: &Layers) -> String {
     let c = &l.config;
     let mut b = String::from(
-        "<p class=lead>Optional modules after the provisioning upload. Each signs in with its own app registration and stops by itself when it would change more than its maximum.</p>",
+        "<p class=lead>Optional modules that run after the upload to Entra. Each signs in with its own app registration and stops by itself when it would change more than its maximum.</p>",
     );
     let rep: Option<Value> = std::fs::read(c.state.dir.join(REPORT_FILE))
         .ok()
@@ -1983,11 +2000,19 @@ fn page_modules(app: &App, l: &Layers) -> String {
         ),
         (
             "joiner",
-            "Joiners (Temporary Access Pass)",
+            "New hires (joiners): first sign-in code",
             c.joiner.as_ref().map(|m| m.enabled),
         ),
-        ("leaver", "Leavers", c.leaver.as_ref().map(|m| m.enabled)),
-        ("webhook", "Webhook", c.webhook.as_ref().map(|m| m.enabled)),
+        (
+            "leaver",
+            "Departing employees (leavers)",
+            c.leaver.as_ref().map(|m| m.enabled),
+        ),
+        (
+            "webhook",
+            "Notify other systems (webhook)",
+            c.webhook.as_ref().map(|m| m.enabled),
+        ),
     ] {
         let m = rep.as_ref().map(|r| &r["modules"][key]);
         let last = match m {
@@ -2031,7 +2056,7 @@ fn page_modules(app: &App, l: &Layers) -> String {
                 rule.criteria()
                     .iter()
                     .filter(|(_, v)| !v.is_empty())
-                    .map(|(k, v)| format!("{k}: {}", v.join(" or ")))
+                    .map(|(k, v)| format!("{}: {}", criterion_label(k), v.join(" or ")))
                     .collect::<Vec<_>>()
                     .join("; ")
             };
@@ -2045,7 +2070,7 @@ fn page_modules(app: &App, l: &Layers) -> String {
         }
         b.push_str("</tbody></table></section>");
         if !r.sod.is_empty() {
-            b.push_str("<section><h2>Segregation of duties</h2><table><thead><tr><th>Name</th><th>Never together</th></tr></thead><tbody>");
+            b.push_str("<section><h2>Conflicting groups (segregation of duties)</h2><p class=note>Nobody gets two groups from the same line; such a person keeps the groups they already have and is reported.</p><table><thead><tr><th>Name</th><th>Never together</th></tr></thead><tbody>");
             let name = |g: &str| {
                 r.rules
                     .iter()
@@ -2076,11 +2101,46 @@ fn query_get(query: &str, key: &str) -> Option<String> {
         .filter(|v| !v.trim().is_empty())
 }
 
+/// Plain-language names for what the access log records; the HR term in brackets.
+fn module_label(m: &str) -> &str {
+    match m {
+        "roles" => "roles and licences",
+        "joiner" => "new hires (joiners)",
+        "leaver" => "departing employees (leavers)",
+        "webhook" => "webhook",
+        other => other,
+    }
+}
+
+fn action_label(a: &str) -> String {
+    match a {
+        "add_to_group" => "added to group".into(),
+        "remove_from_group" => "removed from group".into(),
+        "issue_temporary_access_pass" => "first sign-in code sent (Temporary Access Pass)".into(),
+        "leaver_actions" => "signed out and automatic reply (leaver actions)".into(),
+        other => other.replace('_', " "),
+    }
+}
+
+fn criterion_label(k: &str) -> &str {
+    match k {
+        "department" => "department",
+        "job_title" => "job title",
+        "job_profile" => "job profile",
+        "office" => "office",
+        "company" => "company",
+        "employee_type" => "employee type",
+        "cost_center" => "cost center",
+        "population" => "staff category (population)",
+        other => other,
+    }
+}
+
 fn page_access(app: &App, l: &Layers, query: &str) -> String {
     use crate::modules::records::read_access;
     let emp = query_get(query, "employee").filter(|e| e.len() <= 16);
     let mut b = String::from(
-        "<p class=lead>Every group change, Temporary Access Pass and leaver action the modules made, newest first.</p>",
+        "<p class=lead>Every group change, first sign-in code (Temporary Access Pass) and action for departing employees (leavers) the modules made, newest first.</p>",
     );
     let _ = write!(
         b,
@@ -2104,8 +2164,8 @@ fn page_access(app: &App, l: &Layers, query: &str) -> String {
                     esc(&fmt_time(&e.utc)),
                     esc(e.employee_id.as_deref().unwrap_or("—")),
                     esc(e.upn.as_deref().unwrap_or("")),
-                    esc(&e.action.replace('_', " ")),
-                    esc(&e.module),
+                    esc(&action_label(&e.action)),
+                    esc(module_label(&e.module)),
                     esc(e.target.as_deref().unwrap_or("")),
                     if e.ok {
                         esc(e.detail.as_deref().unwrap_or("ok"))
@@ -2431,7 +2491,7 @@ fn layout(app: &App, l: &Layers, active: &str, title: &str, body: &str) -> Strin
     format!(
         "<!doctype html><html lang=en><head><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\">\
 <title>{t} | AFAS to Entra</title><style>{CSS}</style></head><body><div class=shell>\
-<nav class=side aria-label=\"Main menu\"><p class=brand>AFAS to Entra</p><p class=pop>Population: {pop}</p>{nav}{ro}</nav>\
+<nav class=side aria-label=\"Main menu\"><p class=brand>AFAS to Entra</p><p class=pop>Staff category: {pop}</p>{nav}{ro}</nav>\
 <main><h1>{t}</h1>{body}</main></div></body></html>",
         t = esc(title),
         pop = esc(pop),

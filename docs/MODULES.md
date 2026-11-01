@@ -1,16 +1,19 @@
-# Modules: roles, joiners, leavers and webhook
+# Modules: roles, new hires, departing employees and webhook
 
 The core of afas-entra-sync delivers accounts to Entra provisioning. The four optional
-modules handle what usually comes next in a joiner, mover and leaver process:
+modules handle what usually comes next when someone starts, changes jobs or leaves
+(the joiner, mover and leaver process, JML):
 
 | Module | What it does | Microsoft Graph permissions (application) |
 | --- | --- | --- |
-| `[roles]` Roles and licences | Group membership from HR data (department, job profile, office, ...); licences through group-based licensing; segregation-of-duties rules; time-limited exceptions | `GroupMember.ReadWrite.All`, `User.Read.All` |
-| `[joiner]` Joiners | Temporary Access Pass (TAP) for the first sign-in, valid from the start date, mailed to the manager or a fixed address | `UserAuthMethod-TAP.ReadWrite.All`, `User.Read.All`; `Mail.Send` through Exchange RBAC for Applications, scoped to the sender mailbox |
-| `[leaver]` Leavers | After the end date: sign out everywhere and set an automatic reply | `User.RevokeSessions.All`, `User.Read.All`, `MailboxSettings.ReadWrite` |
-| `[webhook]` Webhook | Joiner, mover and leaver events as signed JSON for an ITSM tool, Power Automate or a script | none (HTTPS POST to your endpoint) |
+| `[roles]` Roles and licences | Group membership from HR data (department, job profile, office, ...); licences through group-based licensing; conflicting groups (segregation of duties); time-limited exceptions | `GroupMember.ReadWrite.All`, `User.Read.All` |
+| `[joiner]` New hires (joiners) | First sign-in code (Temporary Access Pass, TAP), valid from the start date, mailed to the manager or a fixed address | `UserAuthMethod-TAP.ReadWrite.All`, `User.Read.All`; `Mail.Send` through Exchange RBAC for Applications, scoped to the sender mailbox |
+| `[leaver]` Departing employees (leavers) | After the end date: sign out on every device and set an automatic reply | `User.RevokeSessions.All`, `User.Read.All`, `MailboxSettings.ReadWrite` |
+| `[webhook]` Webhook | Events for new hires, job changes and departing employees (joiner, mover, leaver) as signed JSON for an ITSM tool, Power Automate or a script | none (HTTPS POST to your endpoint) |
 
-Each module is off until you add its section to the config file. Example sections are at
+Each module is off until you add its section to the config file. The config sections and
+webhook event names use the short HR terms (`joiner`, `mover`, `leaver`); the GUI and this
+document use plain words with the HR term in brackets. Example sections are at
 the end of `afas-entra-sync.example.toml`.
 
 ## Principles
@@ -24,13 +27,13 @@ The modules follow the same rules as the core:
   planned change (`modules.<name>.planned`).
 - **Own maximum per run.** If a module would change more than its maximum, it changes
   **nothing** and reports a violation (exit 21). A broken AFAS filter or a wrong rule cannot
-  empty all groups or mail 500 passes.
+  empty all groups or mail 500 sign-in codes.
 - **Only after a good upload.** The modules run only when the provisioning run did not
-  stop (no exit 10, 11, 20, 30, 40 or 41). The order is: leavers, joiners, roles, webhook.
+  stop (no exit 10, 11, 20, 30, 40 or 41). The order is: departing employees, new hires, roles, webhook.
 - **Matching is strict.** An employee is linked to an Entra account by `employeeId`. Only if
   the Entra account has no `employeeId` is the UPN used. Two accounts with the same
   `employeeId` is a conflict: the modules skip that employee and say so.
-- **Everything is logged.** Every group change, pass and leaver action goes to the access
+- **Everything is logged.** Every group change, sign-in code and action for a departing employee goes to the access
   log (`<state.dir>/access.log`, JSON Lines, mode 0600). The value of a Temporary Access Pass
   is never logged or written to disk.
 
@@ -38,7 +41,7 @@ The modules follow the same rules as the core:
 
 | Code | Meaning |
 | --- | --- |
-| 3 | Completed, but something needs attention: a segregation-of-duties conflict, an employee without an Entra account yet, a matching conflict. See `notes` in the report. |
+| 3 | Completed, but something needs attention: conflicting groups (segregation of duties), an employee without an Entra account yet, a matching conflict. See `notes` in the report. |
 | 21 | A module stopped itself: more changes than its maximum. Nothing changed by that module. |
 | 42 | A module failed: sign-in, Graph error or webhook delivery. Details in the report. |
 
@@ -63,7 +66,7 @@ Do this once per module you use (`afas-entra-sync-roles`, `-joiner`, `-leaver`).
 4. *API permissions → Add → Microsoft Graph → Application permissions*: the permissions
    from the table above, then *Grant admin consent*.
 5. Fill in `client_id`, `certificate_pem` and `private_key_pem` in the module section.
-6. Dry-run: `afas-entra-sync -c config.toml sync`. Check `modules` in the report.
+6. Test run (dry-run): `afas-entra-sync -c config.toml sync`. Check `modules` in the report.
 
 The tenant, login and Graph addresses come from `[entra]`.
 
@@ -86,12 +89,13 @@ department = ["Finance", "Control"]
 **Rules.** An employee gets a rule's group when they match **all** non-empty criteria of
 that rule. Values within one criterion are alternatives (OR), compared case-insensitively.
 Criteria: `department`, `job_title`, `job_profile`, `office`, `company`, `employee_type`,
-`cost_center`, `population`. `all = true` matches everyone in the upload. A group can appear
+`cost_center`, `population` (staff category). `all = true` matches everyone in the upload. A group can appear
 in several rules; matching any of them is enough.
 
-**Who is eligible.** Active employees. Not-yet-started employees only with
-`include_prehires = true` (licences cost money from the moment of assignment). Leavers are
-kept for `keep_leavers_days` after their end date, then removed.
+**Who is eligible.** Active employees. New hires before their start date (pre-hires) only
+with `include_prehires = true` (licences cost money from the moment of assignment).
+Departing employees (leavers) keep their groups for `keep_leavers_days` after their end
+date, then they are removed.
 
 **Which groups can be managed.** The module checks every group in the rules before it
 changes anything. If one group fails a check, the roles module changes **nothing** in that
@@ -105,7 +109,7 @@ run (exit 42) and names the group. A group fails when it:
 Use cloud security groups created for this purpose, e.g. `AFAS-Finance`.
 
 **Members the module does not know.** Accounts in a managed group that are not linked to an
-employee in this upload (admin accounts, service accounts, another population) are left
+employee in this upload (admin accounts, service accounts, another staff category) are left
 alone. Set `remove_unknown_members = true` only when the group must contain HR employees
 only.
 
@@ -113,7 +117,7 @@ only.
 group-based licensing, included in Entra ID P1). The module never assigns licences directly,
 so no licence permission is needed and Entra handles conflicts and reporting.
 
-**Segregation of duties.**
+**Conflicting groups (segregation of duties).**
 
 ```toml
 [[roles.sod]]
@@ -121,11 +125,11 @@ name = "Pay and approve"
 groups = ["<payments group id>", "<approval group id>"]
 ```
 
-When the rules would give one person two or more groups from the same SoD rule, the module
+When the rules would give one person two or more groups from the same conflict rule (`[[roles.sod]]`), the module
 leaves that person's membership of those groups as it is (it neither adds nor removes them),
 reports it in `notes` and the run ends with exit 3. Fix the HR data or the rules, or add an
 `exclude` exception for one of the groups. Someone who is already in two such groups by
-hand is reported too. Every group in an SoD rule must also be in a role rule.
+hand is reported too. Every group in a conflict rule must also be in a role rule.
 
 **Exceptions.** A manual, time-limited deviation, with a reason:
 
@@ -142,11 +146,11 @@ ahead. After the end date the rules apply again at the next run. Exceptions are 
 `<state.dir>/exceptions.json` and can also be managed on the *Exceptions* page of the GUI.
 Adding and removing is audited.
 
-**Movers.** Someone who changes department loses the old group and gets the new one in the
-same run. Combined with group-based licensing and Conditional Access on groups, that is the
-whole mover process.
+**Job changes (movers).** Someone who changes department loses the old group and gets the
+new one in the same run. Combined with group-based licensing and Conditional Access on
+groups, that covers the whole job change.
 
-## Joiners: Temporary Access Pass
+## New hires (joiners): first sign-in code
 
 ```toml
 [joiner]
@@ -159,22 +163,22 @@ deliver_to = "manager"
 fixed_address = "servicedesk@example.com"
 ```
 
-From `days_before_start` days before the start date, the module creates a Temporary Access
-Pass for the new account. The pass works from `start_hour` (local time, `policy.timezone`)
+From `days_before_start` days before the start date, the module creates a first sign-in
+code (Temporary Access Pass) for the new account. The code works from `start_hour` (local time, `policy.timezone`)
 on the start date, for `lifetime_minutes` (10 to 43,200). The new colleague uses it to sign
 in for the first time and register MFA or a passkey, without a password ever being sent.
 
 - **Who receives it.** `deliver_to = "manager"`: the manager's email from AFAS. If the
-  manager has no email, `fixed_address` is used; without one, no pass is issued and the
+  manager has no email, `fixed_address` is used; without one, no code is sent and the
   report says why. `deliver_to = "fixed"`: always `fixed_address`, for example the service
   desk.
-- **Once per start date.** A pass is issued once per employee per start date. Rehires get a
-  new one. If the account is not in Entra yet (provisioning still busy), the next run tries
+- **Once per start date.** A code is sent once per employee per start date. Returning
+  employees (rehires) get a new one. If the account is not in Entra yet (provisioning still busy), the next run tries
   again, up to three days after the start date.
-- **Mail fails, pass removed.** If the mail cannot be sent, the pass is deleted again so no
-  unknown pass stays valid.
+- **Mail fails, code removed.** If the mail cannot be sent, the code is deleted again so no
+  unknown code stays valid.
 - **The template.** `subject` and `body` with placeholders `{display_name}`, `{upn}`,
-  `{tap}`, `{valid_from}`, `{valid_until}`, `{start_date}`. The body must contain `{tap}`.
+  `{tap}` (the code), `{valid_from}`, `{valid_until}`, `{start_date}`. The body must contain `{tap}`.
 - **Tenant setting.** Turn on the Temporary Access Pass method under *Protection →
   Authentication methods → Policies* for the users who need it.
 
@@ -193,7 +197,7 @@ New-ManagementRoleAssignment -App <client id> -Role "Application Mail.Send" `
 Test-ServicePrincipalAuthorization -Identity <client id> -Resource onboarding@example.com
 ```
 
-## Leavers
+## Departing employees (leavers)
 
 ```toml
 [leaver]
@@ -222,7 +226,7 @@ scope on user mailboxes, the same way as `Mail.Send` above.
 
 **Not possible through Graph: converting the mailbox to a shared mailbox.** Microsoft offers
 that only in Exchange Online PowerShell (`Set-Mailbox -Type Shared`). Use the webhook's
-`leaver` event to create that task in your ITSM tool, or run it from an Azure Automation
+`leaver` event (departing employee) to create that task in your ITSM tool, or run it from an Azure Automation
 runbook that receives the webhook.
 
 ## Webhook
@@ -240,9 +244,9 @@ baseline and sends nothing.
 
 | Event | When |
 | --- | --- |
-| `joiner` | New employee in the upload, or a leaver who is active again (`"rehire": true`) |
-| `mover` | Department, job title, job profile, office, company, employee type, cost center, manager, UPN or display name changed; `changes` holds old and new values |
-| `leaver` | Was active, now past the end date |
+| `joiner` | New hire: new employee in the upload, or a returning employee who is active again (`"rehire": true`) |
+| `mover` | Job change: department, job title, job profile, office, company, employee type, cost center, manager, UPN or display name changed; `changes` holds old and new values |
+| `leaver` | Departing employee: was active, now past the end date |
 
 Each event is a POST with `Content-Type: application/json`:
 
@@ -267,8 +271,8 @@ Headers:
 | `X-AfasEntraSync-Timestamp` | Unix time of sending |
 | `X-AfasEntraSync-Signature` | `sha256=<hex HMAC-SHA256 of "<timestamp>.<body>">` |
 
-**Delivery.** Any 2xx is delivered. Otherwise the event stays in the outbox
-(`modules-state.json`) and is sent again at the next run, in order: after the first failure
+**Delivery.** Any 2xx is delivered. Otherwise the event stays in the send queue
+(outbox, in `modules-state.json`) and is sent again at the next run, in order: after the first failure
 the rest waits. At most 10,000 events are kept. Delivery is at least once, so de-duplicate
 on the event id.
 
@@ -310,7 +314,8 @@ Use it for audits ("who had access to Finance on 1 March, and why") and for acce
 ## GUI
 
 With the GUI on, the *Modules* page shows the status of each module, the role rules and the
-SoD rules; *Roles and licences*, *Joiners* and *Leavers* let you change the non-sensitive
+conflicting groups; *Roles and licences*, *New hires (joiners)* and *Departing employees
+(leavers)* let you change the non-sensitive
 settings (maximums, days, templates); *Access log* and *Exceptions* are described above.
 App registrations, certificates, `group_prefix`, the sender, the fixed address and the
 webhook are locked: they can only be changed in the config file.
@@ -323,4 +328,4 @@ These are based on Microsoft documentation and tested against simulated endpoint
 2. `sendMail` with RBAC for Applications scoping.
 3. The `MailboxNotEnabled` error code for accounts without a mailbox.
 4. Delays between provisioning creating an account and it being visible in Graph (the
-   joiner module retries for three days).
+   new-hires module retries for three days).

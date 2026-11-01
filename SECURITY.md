@@ -129,8 +129,8 @@ Each optional module has its own app registration with certificate auth (see
 | Module | Application permissions |
 | --- | --- |
 | roles | `GroupMember.ReadWrite.All`, `User.Read.All` |
-| joiner | `UserAuthMethod-TAP.ReadWrite.All`, `User.Read.All`; `Mail.Send` **not** in Entra but through Exchange RBAC for Applications, scoped to the sender mailbox |
-| leaver | `User.RevokeSessions.All`, `User.Read.All`, `MailboxSettings.ReadWrite` (optionally scoped with Exchange RBAC for Applications) |
+| joiner (new hires) | `UserAuthMethod-TAP.ReadWrite.All`, `User.Read.All`; `Mail.Send` **not** in Entra but through Exchange RBAC for Applications, scoped to the sender mailbox |
+| leaver (departing employees) | `User.RevokeSessions.All`, `User.Read.All`, `MailboxSettings.ReadWrite` (optionally scoped with Exchange RBAC for Applications) |
 | webhook | none |
 
 `GroupMember.ReadWrite.All` can change members of any non-role-assignable group in the
@@ -154,7 +154,7 @@ sign-in and audit logs.
 | `cargo test` | all tests pass, including 11 TLS tests against a real local TLS server and a CONNECT proxy |
 | `cargo clippy -D warnings` | clean |
 | `cargo audit` | 0 vulnerabilities, 0 warnings (303 crates) |
-| Module tests | 14 module tests against a mock Graph (thresholds, SoD, exceptions, TAP cleanup on mail failure, webhook signature with RFC 4231 vectors, outbox order); mutation checks on remove logic and TAP cleanup |
+| Module tests | 14 module tests against a mock Graph (thresholds, conflicting groups, exceptions, removing the first sign-in code when the mail fails, webhook signature with RFC 4231 vectors, send queue order); mutation checks on remove logic and TAP cleanup |
 | `systemd-analyze security` (GUI unit) | 1.5 OK |
 | Live GUI check | no cookie 401, foreign Host 421, login link → HttpOnly SameSite=Strict cookie → 200 |
 

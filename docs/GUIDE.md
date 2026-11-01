@@ -5,10 +5,30 @@ on-premises Active Directory, including existing accounts, groups and day-to-day
 For the design rules see the [README](../README.md); for security see
 [SECURITY.md](../SECURITY.md).
 
+## Words used
+
+Plain words first, with the usual HR or IT term in brackets:
+
+| In this documentation | Also called | Meaning |
+| --- | --- | --- |
+| New hire | joiner | Someone who starts working here |
+| New hire before the start date | pre-hire | Account exists already, still disabled |
+| Job change | mover | Department, job title, manager or similar changes |
+| Departing employee | leaver | Someone whose end date has passed |
+| Returning employee | rehire | Someone who left and starts again with the same employee number |
+| First sign-in code | Temporary Access Pass (TAP) | One-time code from Entra to sign in and set up MFA, instead of a password |
+| Conflicting groups | segregation of duties (SoD) | Groups one person may never have together, e.g. paying and approving |
+| Staff category | population | Contractors, externals or interns, each with their own config |
+| Skipped records | exclusions | Records with a data error, not sent |
+| Test run | dry-run | Shows what would happen; sends and changes nothing |
+| Upload data | payload | The records exactly as Microsoft receives them |
+| Send queue | outbox | Webhook messages waiting to be delivered |
+
 ## How it works
 
-The tool handles user accounts only. Groups are handled by AFAS itself through its built-in
-Entra ID integration. Two processes, each with one job, linked by the same UPN.
+The core of the tool handles user accounts. Groups can be handled by the tool's optional
+roles module, by AFAS itself through its built-in Entra ID integration, or by dynamic groups
+in Entra (see [Groups](#groups)). Whatever you choose, everything is linked by the same UPN.
 
 What the tool does: every hour it fetches all employees from AFAS, validates them, decides
 per employee whether the account must be active, and sends the whole list to Microsoft.
@@ -17,8 +37,8 @@ Microsoft compares that with what exists and creates, updates or disables accoun
 What the tool does not do:
 
 - Delete accounts. It only disables.
-- Assign groups or licences. The AFAS integration does that, or you use groups in Entra.
-- Set or send passwords.
+- Assign groups or licences, unless you turn on the roles module ([MODULES.md](MODULES.md)).
+- Set or send passwords. (The optional new-hires module sends a first sign-in code instead.)
 - Touch anything that does not come from AFAS: admin accounts, service accounts and
   accounts of people outside the GetConnector stay as they are.
 
@@ -60,7 +80,7 @@ Arrange these before you start; most need an owner other than IT.
 - **AD Recycle Bin** enabled.
 - **A target OU** in AD for new accounts, inside the Connect Sync scope.
 - **Existing accounts:** `employeeID` filled with the AFAS employee number. Without it,
-  Microsoft creates duplicate accounts (see [Existing accounts](#step-5--existing-accounts-and-dry-run)).
+  Microsoft creates duplicate accounts (see [Existing accounts](#step-5--existing-accounts-and-test-run-dry-run)).
 
 ## Step 0 – Prepare AD (hybrid only)
 
@@ -311,11 +331,11 @@ sudo -u afas-sync afas-entra-sync -c /etc/afas-entra-sync/config.toml check-tls
 A typo or unknown key gives a clear error (exit 10), never a silent default. `check-tls`
 shows the TLS version, cipher and key exchange per endpoint (exit 60 if one fails the policy).
 
-## Step 5 – Existing accounts and dry-run
+## Step 5 – Existing accounts and test run (dry-run)
 
 Without `--apply` nothing is sent to Microsoft, so this is safe to try.
 
-**5a. Dry-run.**
+**5a. Test run (dry-run).**
 
 ```bash
 sudo -u afas-sync afas-entra-sync -c /etc/afas-entra-sync/config.toml \
@@ -324,8 +344,8 @@ sudo -u afas-sync afas-entra-sync -c /etc/afas-entra-sync/config.toml \
 
 The report (JSON on screen and in `/var/lib/afas-entra-sync/last-report.json`) shows:
 
-- `counts`: active, new (still disabled), leavers.
-- `exclusions`: records with data errors and why. Have HR fix them before going live.
+- `counts`: active, new hires (still disabled), departing employees (leavers).
+- `exclusions`: skipped records with data errors and why. Have HR fix them before going live.
 - `warnings`: for example a manager who is not in the upload.
 - `violations`: a safety threshold was hit.
 
@@ -385,7 +405,7 @@ Import-Csv link-report.csv | Where-Object Status -eq 'LINK' | ForEach-Object {
 Run 5c again: everything must be OK, apart from explained NO_ACCOUNTs. Delete the CSV files.
 
 **5e. Look ahead (optional).** `sync --as-of 2026-12-01` shows what the tool would do on that
-date. Useful to check leavers and new employees.
+date. Useful to check departing employees and new hires.
 
 ## Step 6 – Pilot and go-live
 
@@ -406,18 +426,18 @@ After 5 to 10 minutes the result is in Enterprise app → Provisioning logs, or 
 - Existing employee: only attributes updated, no new account.
 - Manager in AD is right (Organization tab in ADUC).
 - A change in AFAS (e.g. job title) is in AD and Entra within about 90 minutes.
-- New employee (start within the pre-hire window): disabled account in the target OU, in
+- New hire (start date within the pre-hire window): disabled account in the target OU, in
   Entra within 30 minutes.
 - That same new employee in an AFAS group: one account in Entra, no cloud-only duplicate
   (see [Groups](#groups)).
 - Start date reached: account enabled.
-- Leaver: disabled the day after the end date and removed from the AFAS groups.
+- Departing employee (leaver): disabled the day after the end date and removed from the AFAS groups.
 - Admin and service accounts unchanged.
 
 **6c. Schedule** (step 7) and let the pilot run for 2 to 4 weeks.
 
-**6d. Expand.** Run a dry-run and 5c again for the new departments, then widen or remove the
-scoping filter. The first run without earlier state counts every leaver in the window as a
+**6d. Expand.** Run a test run and 5c again for the new departments, then widen or remove the
+scoping filter. The first run without earlier state counts every departing employee in the window as a
 possible disable; if that hits the threshold, check the list and proceed deliberately with
 `--allow-mass-disable`.
 
@@ -425,10 +445,10 @@ possible disable; if that hits the threshold, check the list and proceed deliber
 
 | Agreement | Who |
 | --- | --- |
-| Account requests by email stop; HR records joiners, movers and leavers only in AFAS | HR |
+| Account requests by email stop; HR records new hires, job changes and departing employees (joiners, movers, leavers) only in AFAS | HR |
 | The UPN is generated in AFAS, no longer by IT | HR, IT |
 | First password or Temporary Access Pass on day 1 | Service desk |
-| Exit 3: excluded records go to HR | IT |
+| Exit 3: skipped records go to HR | IT |
 | Group membership changes go through AFAS, not Entra | HR, IT |
 
 ## Step 7 – Schedule and monitor
@@ -492,7 +512,7 @@ for example because of a UPN conflict.
 
 **Checkmk.** `deploy/ansible/checkmk/afas_entra_sync` is a local check: OK on exit 0, WARN
 on exit 3, CRIT on any other exit code, a broken report, or no run for more than 3 hours.
-A manual dry-run overwrites the report; the status then shows `(dry-run)`.
+A manual test run overwrites the report; the status then shows `(dry-run)`.
 
 **Exit codes:**
 
@@ -520,21 +540,21 @@ Example with 600 employees and a run every hour:
 
 | What | When | How |
 | --- | --- | --- |
-| Excluded records to HR | On exit 3 | `exclusions` and `disappeared_while_active` from the report |
+| Skipped records to HR | On exit 3 | `exclusions` and `disappeared_while_active` from the report |
 | Renew the certificate | A month before expiry | Step 3a again, upload the new `cert.pem`, remove the old one only after a successful run |
 | Renew the AFAS token | When AFAS revokes it, or when staff change | Replace the token file (or secret) |
 | New version | On release | Replace the binary (Ansible verifies the checksum) |
 | Check TLS | After network or firewall changes | `check-tls` |
 | Provisioning agent | Updates itself | In the app under View on-premises agents |
 
-## Employees: joiners, movers and leavers
+## Employees: new hires, job changes and departing employees (joiners, movers, leavers)
 
 HR does everything in AFAS; the account follows within an hour. The examples assume the
 defaults: create 14 days in advance and keep sending 30 days after the end date.
 
 | What HR does in AFAS | What happens to the account |
 | --- | --- |
-| New employee, starts in 3 weeks | Nothing yet |
+| New hire, starts in 3 weeks | Nothing yet |
 | Start date is 14 days away or less | Account created in the target OU, disabled |
 | Start date reached | Account enabled |
 | Job title, department, manager or cost center changed | Only those fields updated |
@@ -542,7 +562,7 @@ defaults: create 14 days in advance and keep sending 30 days after the end date.
 | End date filled in, not reached yet | Account stays active |
 | Day after the end date | Account disabled, not deleted |
 | 30 days after the end date | No longer sent; account stays disabled |
-| Rehired, same employee number | Existing account enabled again |
+| Returning employee (rehire), same employee number | Existing account enabled again |
 | Data error (invalid UPN, date, field too long) | That record stays unchanged; listed in `exclusions` |
 | Employee disappears from the GetConnector | Account stays as it is; listed in `disappeared_while_active` |
 
@@ -550,8 +570,9 @@ Dates are whole calendar days in `policy.timezone`. Someone leaving on 31 Decemb
 active that day and disabled on 1 January.
 
 **Password and first sign-in.** The tool and Microsoft set a random password nobody knows.
-Arrange the first sign-in yourself, for example the service desk issuing a Temporary Access
-Pass on day 1, or Lifecycle Workflows (Entra ID Governance).
+The optional new-hires module mails a first sign-in code (Temporary Access Pass) to the
+manager ([MODULES.md](MODULES.md)). Without it, arrange the first sign-in yourself, for
+example the service desk issuing one on day 1.
 
 **Clean-up.** Disabled accounts stay. Delete them after X months with your existing
 process; the tool and this Microsoft API never delete.
@@ -562,7 +583,7 @@ There are three ways to fill groups from AFAS. Pick one per group:
 
 | Way | Where it is managed | When |
 | --- | --- | --- |
-| The tool's roles module | Rules in the config file (department, job profile, ...), with SoD rules, exceptions and an access log | You want rules, a dry-run, a maximum per run and an audit trail; see [MODULES.md](MODULES.md) |
+| The tool's roles module | Rules in the config file (department, job profile, ...), with conflicting groups (segregation of duties), exceptions and an access log | You want rules, a test run, a maximum per run and an audit trail; see [MODULES.md](MODULES.md) |
 | AFAS Profit Entra ID integration | User groups in Profit, by HR | HR wants to manage members by hand in Profit |
 | Dynamic groups in Entra | Membership rules in Entra | Simple rules, no extra app registration |
 
@@ -621,12 +642,12 @@ using AD groups, or later write groups back to AD with Cloud Sync. That is a sep
 Careful with the AFAS filter: someone who drops out while active is not disabled. They show
 up in `disappeared_while_active` and the run ends with exit 3.
 
-## Joiners, leavers and ITSM (optional modules)
+## New hires, departing employees and ITSM (optional modules)
 
-After the provisioning upload the tool can also issue a Temporary Access Pass to new
-employees, sign leavers out everywhere with an automatic reply, and send signed events to an
-ITSM tool (for example to convert a leaver's mailbox to a shared mailbox, which has no Graph
-API). Setup per module, with its own app registration: [MODULES.md](MODULES.md).
+After the upload to Entra the tool can also mail a first sign-in code (Temporary Access
+Pass) for new hires (joiners), sign departing employees (leavers) out on every device with an
+automatic reply, and send signed events to an ITSM tool (for example to convert a departing
+employee's mailbox to a shared mailbox, which has no Graph API). Setup per module, with its own app registration: [MODULES.md](MODULES.md).
 
 ## Admin GUI (optional)
 

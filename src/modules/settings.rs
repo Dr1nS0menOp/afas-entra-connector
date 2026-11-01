@@ -21,7 +21,7 @@ pub struct ModuleIdentity {
 
 /// Roles: AFAS attributes decide membership of Entra groups (licences through
 /// group-based licensing). Only groups whose name starts with `group_prefix` are touched.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct RolesConfig {
     #[serde(default)]
@@ -57,7 +57,7 @@ fn default_role_changes() -> u32 {
 
 /// One rule: employees matching ALL non-empty criteria get the group.
 /// Values within one criterion are alternatives (OR), compared case-insensitively.
-#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Deserialize, serde::Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct RoleRule {
     /// Object ID of the Entra group.
@@ -102,7 +102,7 @@ impl RoleRule {
 }
 
 /// Segregation of duties: nobody may be in two or more of these groups.
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Deserialize, serde::Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct SodRule {
     pub name: String,
@@ -110,7 +110,7 @@ pub struct SodRule {
 }
 
 /// Joiners: a Temporary Access Pass for the first day, mailed to the manager or a fixed address.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct JoinerConfig {
     #[serde(default)]
@@ -144,7 +144,7 @@ pub struct JoinerConfig {
     pub body: String,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Deserialize, serde::Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum DeliverTo {
     Manager,
@@ -171,7 +171,7 @@ fn default_body() -> String {
 }
 
 /// Leavers: revoke sessions and set an automatic reply, once per end date.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct LeaverConfig {
     #[serde(default)]
@@ -203,7 +203,7 @@ fn default_max_leavers() -> u32 {
 }
 
 /// Webhook: joiner, mover and leaver events as signed JSON, e.g. for an ITSM tool.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct WebhookConfig {
     #[serde(default)]

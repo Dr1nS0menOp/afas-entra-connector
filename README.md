@@ -28,18 +28,37 @@ Entra. Safe to run again; `sudo afas-entra-sync uninstall` removes it. Ansible u
 the optional modules in [docs/MODULES.md](docs/MODULES.md), security in [SECURITY.md](SECURITY.md), Ansible deployment in
 [deploy/ansible](deploy/ansible/README.md).
 
-## Optional modules: the rest of joiner, mover, leaver
+## Optional modules: new hires, job changes and departing employees
 
 Each module is off until configured, signs in with its own app registration, plans first
-(dry-run) and stops by itself above its own maximum. Details: [docs/MODULES.md](docs/MODULES.md).
+(test run, also called dry-run) and stops by itself above its own maximum. Details: [docs/MODULES.md](docs/MODULES.md).
 
 | Module | Does |
 | --- | --- |
-| Roles and licences | Group membership from HR data (department, job profile, ...); licences via group-based licensing; segregation-of-duties rules; time-limited exceptions with a reason |
-| Joiners | Temporary Access Pass for the first sign-in, valid from the start date, mailed to the manager; no passwords sent |
-| Leavers | Sign out everywhere and set an automatic reply after the end date |
-| Webhook | Signed joiner/mover/leaver events (HMAC-SHA256) for an ITSM tool or Power Automate, with retries |
+| Roles and licences | Group membership from HR data (department, job profile, ...); licences via group-based licensing; conflicting groups (segregation of duties); time-limited exceptions with a reason |
+| New hires (joiners) | First sign-in code (Temporary Access Pass), valid from the start date, mailed to the manager; no passwords sent |
+| Departing employees (leavers) | Sign out on every device and set an automatic reply after the end date |
+| Webhook | Signed events for new hires, job changes and departing employees (joiner/mover/leaver) (HMAC-SHA256) for an ITSM tool or Power Automate, with retries |
 | Access log | Who got or lost which access, when and through which module; JSON or CSV export |
+
+## Words used
+
+Plain words first, with the usual HR or IT term in brackets:
+
+| In this documentation | Also called | Meaning |
+| --- | --- | --- |
+| New hire | joiner | Someone who starts working here |
+| New hire before the start date | pre-hire | Account exists already, still disabled |
+| Job change | mover | Department, job title, manager or similar changes |
+| Departing employee | leaver | Someone whose end date has passed |
+| Returning employee | rehire | Someone who left and starts again with the same employee number |
+| First sign-in code | Temporary Access Pass (TAP) | One-time code from Entra to sign in and set up MFA, instead of a password |
+| Conflicting groups | segregation of duties (SoD) | Groups one person may never have together, e.g. paying and approving |
+| Staff category | population | Contractors, externals or interns, each with their own config |
+| Skipped records | exclusions | Records with a data error, not sent |
+| Test run | dry-run | Shows what would happen; sends and changes nothing |
+| Upload data | payload | The records exactly as Microsoft receives them |
+| Send queue | outbox | Webhook messages waiting to be delivered |
 
 ## Design principle: when in doubt, send nothing
 
@@ -66,8 +85,8 @@ or failed run is repaired by the next one.
 ## Active or not
 
 - **Active** from the start date up to and including the end date (calendar date, `policy.timezone`).
-- **New employee**: from `prehire_days` before the start date, sent with `active: false` (account exists, disabled).
-- **Leaver**: until `leaver_lookback_days` after the end date, sent with `active: false`. After that, no longer sent.
+- **New hire (pre-hire)**: from `prehire_days` before the start date, sent with `active: false` (account exists, disabled).
+- **Departing employee (leaver)**: until `leaver_lookback_days` after the end date, sent with `active: false`. After that, no longer sent.
 - Dates are taken literally. A date with a time other than midnight (e.g. `…T23:00:00Z`) is refused: a time zone was converted somewhere and the date cannot be trusted.
 
 ## Extra attributes (on/off)
@@ -108,7 +127,7 @@ Connect Sync picks up (e.g. `extensionAttribute2`; these only exist if AD has th
 extension). In Entra, create one dynamic group per profile, e.g.
 `user.extensionAttribute2 -eq "FP-ICT-01"`. The tool needs no extra permissions for this.
 
-## Populations (contractors, externals, interns)
+## Staff categories (populations): contractors, externals, interns
 
 Each population is its own config with its own GetConnector, its own `state.dir` and preferably
 its own provisioning app (Microsoft advises one app per source). Example:
@@ -170,7 +189,7 @@ another address. Clearing a value from the config file is only possible in that 
 
 ### Running
 
-- **Dry-run** runs in the background; the page shows the status and the result.
+- **Test run** (dry-run) runs in the background; the page shows the status and the result.
 - **Run sync** asks for the word `APPLY`; proceeding past the disable threshold asks for
   `ALLOW DISABLE`. The safety thresholds always apply. A run at the same time as the scheduled
   sync is refused (shared lock file).
@@ -202,9 +221,9 @@ Static Linux build: `cargo build --release --target x86_64-unknown-linux-musl`.
 
 ```
 afas-entra-sync -c config.toml check-config
-afas-entra-sync -c config.toml sync                              # dry-run, sends nothing
-afas-entra-sync -c config.toml sync --dump-payload /tmp/p.json   # dry-run + inspect payload
-afas-entra-sync -c config.toml sync --as-of 2026-12-01           # dry-run as if it is that date
+afas-entra-sync -c config.toml sync                              # test run (dry-run), sends nothing
+afas-entra-sync -c config.toml sync --dump-payload /tmp/p.json   # test run + inspect the upload data
+afas-entra-sync -c config.toml sync --as-of 2026-12-01           # test run as if it is that date
 afas-entra-sync -c config.toml sync --apply                      # actually upload
 afas-entra-sync -c config.toml check-logs --since-minutes 120    # check provisioning logs
 afas-entra-sync -c config.toml check-tls                         # TLS version, cipher and key exchange per endpoint
@@ -226,7 +245,7 @@ permissions 0600 (Linux). Note: `--dump-payload` *does* contain personal data.
 | --- | --- |
 | 0 | All OK |
 | 2 | Invalid command line (unknown option or argument) |
-| 3 | Completed, but records need attention (excluded or missing) |
+| 3 | Completed, but records need attention (skipped or missing) |
 | 10 | Configuration error |
 | 11 | Another run is active |
 | 20 | Safety stop: **nothing** uploaded |
@@ -287,9 +306,9 @@ Example with 600 employees and a run every hour:
 - **Empty optional fields are omitted**, not sent as `null`. If *clear attribute values (preview)* is on in the mapping, Microsoft clears an attribute that is missing. An empty department in AFAS then empties the department in AD. That is usually what you want, but be aware of it.
 - **An employee who disappears from the GetConnector** (filtered, deleted) is not disabled automatically. They show up in `disappeared_while_active` and the run ends with exit 3.
 - **Multiple employments**: the GetConnector must return one row per employee. Two different rows for one employee number are skipped.
-- **A leaver without an existing account** within the lookback period is created by Microsoft as a disabled account. So keep `leaver_lookback_days` short.
-- **First run**: without state, every leaver in the window counts as a possible disable. With a large first load the threshold applies; proceed deliberately with `--allow-mass-disable`.
-- `--as-of` only works in dry-run.
+- **A departing employee (leaver) without an existing account** within the lookback period is created by Microsoft as a disabled account. So keep `leaver_lookback_days` short.
+- **First run**: without state, every departing employee in the window counts as a possible disable. With a large first load the threshold applies; proceed deliberately with `--allow-mass-disable`.
+- `--as-of` only works in a test run (dry-run).
 
 ## Tests
 
