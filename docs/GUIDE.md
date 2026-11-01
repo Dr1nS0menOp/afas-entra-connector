@@ -227,11 +227,47 @@ certificate in production.
 ## Step 4 – Install the tool
 
 One static file without dependencies. It does not have to run on the agent server; any Linux
-host with HTTPS to AFAS and Microsoft will do.
+host (x86_64) with HTTPS to AFAS and Microsoft will do.
 
-**With Ansible (recommended):** see [deploy/ansible](../deploy/ansible/README.md). It
-creates the user and directories, verifies the binary's checksum, places a validated config
-and sets the key permissions.
+**With the installer (recommended without Ansible).** Put the release files
+`afas-entra-sync-linux-x86_64`, `afas-entra-sync-linux-x86_64.sha256` and `install.sh` in one
+directory and run:
+
+```bash
+sudo ./install.sh
+```
+
+It asks for the AFAS environment number, GetConnector, tenant ID, client ID, service
+principal ID, job ID, UPN domain(s), number of employees and the AFAS token (hidden), and
+validates every answer before it writes anything. Then it:
+
+- verifies the binary's SHA-256 and installs it as `/usr/local/bin/afas-entra-sync`;
+- creates the system user `afas-sync` and `/etc/afas-entra-sync` and `/var/lib/afas-entra-sync` (0700);
+- writes the AFAS token (0600) and a validated `config.toml` (0600) from the example config;
+- creates `cert.pem` and `key.pem` (RSA 3072, SHA-256, valid 365 days, key 0600) and prints
+  the thumbprint Entra will show after you upload `cert.pem` in step 3b;
+- writes hardened systemd units for the hourly sync (:07) and check-logs (:22), not yet enabled.
+
+Unattended, with every value as a flag and the token from a file (delete it afterwards):
+
+```bash
+sudo ./install.sh --token-file token.txt --afas-env 12345 \
+  --tenant-id <tenant> --client-id <client> --service-principal-id <sp> --job-id <job> \
+  --upn-domain example.com --employee-count 600
+```
+
+Running it again keeps the config, token and certificate and only updates the binary and
+units, so it is also the upgrade path. `--reconfigure`, `--replace-token` and `--renew-cert`
+replace those (the old files are kept as backups). After the pilot dry-run, go live with
+`sudo afas-entra-sync install --enable-sync`. Remove with `sudo afas-entra-sync uninstall`
+(add `--purge` to also delete config, token, key, state and the user).
+
+When you use the installer, it already creates the certificate: skip the openssl command in
+step 3a and upload `/etc/afas-entra-sync/cert.pem`.
+
+**With Ansible:** see [deploy/ansible](../deploy/ansible/README.md). It creates the user and
+directories, verifies the binary's checksum, places a validated config and sets the key
+permissions.
 
 **By hand (as root):**
 
@@ -400,7 +436,10 @@ possible disable; if that hits the threshold, check the list and proceed deliber
 Run `sync --apply` every hour and alert on any exit code other than 0. Use one scheduler:
 the tool refuses a second run at the same time (exit 11).
 
-**Option A: systemd timer.** `/etc/systemd/system/afas-entra-sync.service`:
+**Installer:** `sudo afas-entra-sync install --enable-sync` enables the sync and check-logs
+timers it wrote in step 4; nothing else to do.
+
+**Option A: systemd timer by hand.** `/etc/systemd/system/afas-entra-sync.service`:
 
 ```ini
 [Unit]

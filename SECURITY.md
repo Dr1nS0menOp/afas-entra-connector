@@ -29,7 +29,8 @@ apply to it.
 | GUI misuse over the network | Non-local only behind a trusted proxy (Traefik) with the Authentik user header; everything audited |
 | GUI weakens security settings | TLS policy, addresses, secrets, state and the GUI switch are locked; the GUI can turn itself off but never on |
 | Compromised dependency | `Cargo.lock` pinned, `cargo audit` clean (0 advisories in 303 crates on 2026-11-01), `#![forbid(unsafe_code)]` |
-| Tampered binary during deployment | Ansible verifies the SHA-256 checksum before installing |
+| Tampered binary during deployment | `install.sh` and Ansible verify the SHA-256 checksum before installing |
+| Installer leaves a half-configured host | Every answer is validated and the config is built and checked before anything is written; files are written atomically with final permissions |
 
 ## TLS policy
 
@@ -94,6 +95,8 @@ engines fail on the larger ML-KEM handshake; `check-tls` will show that as a han
 
 - The tool runs as the system user `afas-sync` (no shell, no home). Config and state
   directories are 0700; the token and private key 0600.
+- The installer (`install`) writes the same hardened units for the sync, check-logs and GUI
+  services; each scores 1.5 ("OK") on `systemd-analyze security`.
 - The admin GUI runs as a hardened systemd service (`ProtectSystem=strict`, no
   capabilities, syscall filter, `MemoryDenyWriteExecute`, only the state directory
   writable). `systemd-analyze security` exposure: 1.5 ("OK").

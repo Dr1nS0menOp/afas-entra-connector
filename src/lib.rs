@@ -10,6 +10,7 @@ pub mod config;
 pub mod entra;
 pub mod error;
 pub mod http;
+pub mod install;
 pub mod model;
 pub mod plan;
 pub mod scim;

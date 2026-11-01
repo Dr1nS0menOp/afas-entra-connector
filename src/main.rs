@@ -62,6 +62,65 @@ enum Cmd {
     /// Handshake with AFAS, Entra login and Graph using the `[tls]` policy and report the
     /// negotiated TLS version, cipher suite and key exchange; exit 60 if one fails.
     CheckTls,
+    /// Install on this Linux host without Ansible: service user, directories, binary,
+    /// AFAS token, validated config, Entra certificate and systemd timers. Safe to run again.
+    /// Missing values are asked interactively; give them as flags for unattended use.
+    Install {
+        /// AFAS environment number (the 12345 in 12345.rest.afas.online) or the full REST URL.
+        #[arg(long)]
+        afas_env: Option<String>,
+        /// GetConnector name (default Entra_Medewerkers).
+        #[arg(long)]
+        connector: Option<String>,
+        /// Entra tenant ID.
+        #[arg(long)]
+        tenant_id: Option<String>,
+        /// Application (client) ID of the app registration.
+        #[arg(long)]
+        client_id: Option<String>,
+        /// Object ID of the provisioning app's service principal.
+        #[arg(long)]
+        service_principal_id: Option<String>,
+        /// Provisioning job ID (API2AD.…).
+        #[arg(long)]
+        job_id: Option<String>,
+        /// Allowed UPN domain; repeat for more.
+        #[arg(long = "upn-domain")]
+        upn_domains: Vec<String>,
+        /// Current number of employees; min_records becomes 90% of it.
+        #[arg(long)]
+        employee_count: Option<u32>,
+        /// Read the AFAS token from this file (or set AFAS_TOKEN). Otherwise it is asked.
+        #[arg(long)]
+        token_file: Option<PathBuf>,
+        /// Write a new config.toml (the old one is kept as a backup).
+        #[arg(long)]
+        reconfigure: bool,
+        /// Replace the stored AFAS token.
+        #[arg(long)]
+        replace_token: bool,
+        /// Create a new certificate (the old one is kept as *.pem.old).
+        #[arg(long)]
+        renew_cert: bool,
+        /// Enable the hourly sync (--apply) and check-logs timers. Do this after the dry-run.
+        #[arg(long)]
+        enable_sync: bool,
+        /// New config only: turn on the admin GUI (127.0.0.1:8080).
+        #[arg(long)]
+        gui: bool,
+        #[arg(long, hide = true, default_value = "/")]
+        root: PathBuf,
+    },
+    /// Remove the binary and systemd units. With --purge also config, token, key, state and the user.
+    Uninstall {
+        #[arg(long)]
+        purge: bool,
+        /// Do not ask for confirmation.
+        #[arg(long)]
+        yes: bool,
+        #[arg(long, hide = true, default_value = "/")]
+        root: PathBuf,
+    },
     /// Read the provisioning logs of the last minutes; exit 50 on failures.
     CheckLogs {
         #[arg(long, default_value_t = 120)]
@@ -81,8 +140,10 @@ fn main() {
 
 fn real_main() -> i32 {
     let cli = Cli::parse();
-    if matches!(cli.cmd, Cmd::GuiEnable) {
-        return gui_enable(&cli.config);
+    match cli.cmd {
+        Cmd::GuiEnable => return gui_enable(&cli.config),
+        Cmd::Install { .. } | Cmd::Uninstall { .. } => return install_cmd(cli.cmd),
+        _ => {}
     }
     let cfg = match Config::load(&cli.config) {
         Ok(c) => c,
@@ -136,7 +197,7 @@ fn real_main() -> i32 {
                 Err(e) => fail(&AppError::Config(e)),
             }
         }
-        Cmd::GuiEnable => exit::INTERNAL,
+        Cmd::GuiEnable | Cmd::Install { .. } | Cmd::Uninstall { .. } => exit::INTERNAL,
         Cmd::CheckTls => check_tls(&cfg),
         Cmd::CheckLogs { since_minutes } => {
             if !(1..=10_080).contains(&since_minutes) {
@@ -215,6 +276,82 @@ fn gui_enable(path: &std::path::Path) -> i32 {
             exit::OK
         }
         Err(e) => fail(&AppError::Internal(e)),
+    }
+}
+
+fn install_cmd(cmd: Cmd) -> i32 {
+    use afas_entra_sync::install::{
+        Answers, InstallOptions, RealSystem, UninstallOptions, install, uninstall,
+    };
+    let res = match cmd {
+        Cmd::Install {
+            afas_env,
+            connector,
+            tenant_id,
+            client_id,
+            service_principal_id,
+            job_id,
+            upn_domains,
+            employee_count,
+            token_file,
+            reconfigure,
+            replace_token,
+            renew_cert,
+            enable_sync,
+            gui,
+            root,
+        } => {
+            let token = match token_file {
+                Some(f) => match std::fs::read_to_string(&f) {
+                    Ok(t) => Some(t.trim().to_string()),
+                    Err(e) => {
+                        return fail(&AppError::Config(format!(
+                            "cannot read {}: {e}",
+                            f.display()
+                        )));
+                    }
+                },
+                None => std::env::var("AFAS_TOKEN")
+                    .ok()
+                    .filter(|t| !t.trim().is_empty()),
+            };
+            let binary = match std::env::current_exe() {
+                Ok(b) => b,
+                Err(e) => return fail(&AppError::Internal(e.to_string())),
+            };
+            install(
+                &RealSystem,
+                &InstallOptions {
+                    root,
+                    binary,
+                    answers: Answers {
+                        afas_env,
+                        connector,
+                        tenant_id,
+                        client_id,
+                        service_principal_id,
+                        job_id,
+                        upn_domains,
+                        employee_count,
+                        token,
+                    },
+                    reconfigure,
+                    replace_token,
+                    renew_cert,
+                    enable_sync,
+                    gui,
+                },
+            )
+            .map(|_| ())
+        }
+        Cmd::Uninstall { purge, yes, root } => {
+            uninstall(&RealSystem, &UninstallOptions { root, purge, yes })
+        }
+        _ => Ok(()),
+    };
+    match res {
+        Ok(()) => exit::OK,
+        Err(e) => fail(&AppError::Config(e)),
     }
 }
 

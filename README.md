@@ -12,6 +12,18 @@ fetch → validate → decide active/inactive → check → upload.
 > the documented behaviour. **Not** yet tested against a real AFAS environment
 > or a real Entra tenant. See [Not yet verified](#not-yet-verified).
 
+**Quick install** (Linux x86_64, no Ansible needed): download the release files
+`afas-entra-sync-linux-x86_64`, its `.sha256` and `install.sh` into one directory, then
+
+```
+sudo ./install.sh
+```
+
+It verifies the checksum, creates the service user, directories, AFAS token, a validated
+config, the Entra certificate and hardened systemd timers, and tells you what to upload to
+Entra. Safe to run again; `sudo afas-entra-sync uninstall` removes it. Ansible users can use
+[deploy/ansible](deploy/ansible/README.md) instead.
+
 **Documentation:** step-by-step setup and operation in [docs/GUIDE.md](docs/GUIDE.md),
 security in [SECURITY.md](SECURITY.md), Ansible deployment in
 [deploy/ansible](deploy/ansible/README.md).
@@ -185,6 +197,8 @@ afas-entra-sync -c config.toml check-logs --since-minutes 120    # check provisi
 afas-entra-sync -c config.toml check-tls                         # TLS version, cipher and key exchange per endpoint
 afas-entra-sync -c config.toml serve                             # admin GUI (needs [gui] enabled = true)
 afas-entra-sync -c config.toml gui-enable                        # turn the GUI back on after turning it off in the GUI
+sudo afas-entra-sync install [--enable-sync] [flags]             # install / upgrade on this host (see install --help)
+sudo afas-entra-sync uninstall [--purge]                         # remove (keeps config and state unless --purge)
 ```
 
 The report goes to stdout as JSON and to `<state.dir>/last-report.json`.

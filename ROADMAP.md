@@ -1,7 +1,7 @@
 # Roadmap afas-entra-sync
 
 Recorded 2026-10-31, starting from version 0.1.0 (PoC): employees from one GetConnector,
-a fixed set of attributes, CLI only. Current version: 0.7.0 (security hardening: TLS 1.3 + post-quantum, check-tls, GUI sign-in, secret file checks; see SECURITY.md).
+a fixed set of attributes, CLI only. Current version: 0.8.0 (one-step installer without Ansible: `install.sh` / `afas-entra-sync install`, `uninstall`).
 
 Order = proposed build order. Every item ships with tests at the same level as 0.1.0
 (unit, e2e against mocks, property tests, mutation tests).
