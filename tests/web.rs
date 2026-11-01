@@ -6,8 +6,8 @@ mod common;
 
 use afas_entra_sync::config::{Config, check_overrides};
 use afas_entra_sync::web::{
-    App, CONFIRM_APPLY, CONFIRM_MASS, Request, Response, WebOptions, esc, handle, parse_form,
-    validate_listen,
+    App, CONFIRM_APPLY, CONFIRM_MASS, MAX_SESSIONS, Request, Response, SESSION_COOKIE, WebOptions,
+    esc, handle, parse_form, validate_listen,
 };
 use common::*;
 use std::net::IpAddr;
@@ -78,7 +78,7 @@ fn auth(a: &App) -> Vec<(String, String)> {
         ("host".into(), "127.0.0.1:8080".into()),
         (
             "cookie".into(),
-            format!("other=1; afas_gui_session={}", a.session),
+            format!("other=1; {SESSION_COOKIE}={}", a.new_session().unwrap()),
         ),
     ]
 }
@@ -675,7 +675,7 @@ fn local_mode_requires_login_link_and_session_cookie() {
     // Wrong cookie, wrong token: refused.
     let bad = vec![
         host.clone(),
-        ("cookie".into(), "afas_gui_session=00".into()),
+        ("cookie".into(), format!("{SESSION_COOKIE}=00")),
     ];
     assert_eq!(raw(&a, "/", &bad).status, 401);
     assert_eq!(
@@ -683,17 +683,29 @@ fn local_mode_requires_login_link_and_session_cookie() {
         403
     );
     assert_eq!(raw(&a, "/login", std::slice::from_ref(&host)).status, 403);
-    // Correct login link: session cookie, HttpOnly, SameSite=Strict.
+    // Correct login link: a new session, cookie __Host-, Secure, HttpOnly, SameSite=Strict.
+    let link = a.login_token();
     let r = raw(
         &a,
-        &format!("/login?token={}", a.login_token),
+        &format!("/login?token={link}"),
         std::slice::from_ref(&host),
     );
     assert_eq!(r.status, 303);
     let c = r.set_cookie.unwrap();
-    assert!(c.starts_with(&format!("afas_gui_session={};", a.session)));
-    assert!(c.contains("HttpOnly") && c.contains("SameSite=Strict"));
-    assert_ne!(a.session, a.login_token);
+    assert!(c.starts_with(&format!("{SESSION_COOKIE}=")), "{c}");
+    for attr in ["Secure", "HttpOnly", "SameSite=Strict", "Path=/"] {
+        assert!(c.contains(attr), "{attr}: {c}");
+    }
+    assert!(!c.contains(&link) && !c.contains("Domain"));
+    assert_eq!(a.session_count(), 1);
+    // The link works once; a fresh one replaces it.
+    let again = raw(
+        &a,
+        &format!("/login?token={link}"),
+        std::slice::from_ref(&host),
+    );
+    assert_eq!(again.status, 403);
+    assert_ne!(a.login_token(), link);
     // POST without a session is refused before CSRF is even checked.
     let r = handle(
         &a,
@@ -717,7 +729,7 @@ fn local_mode_refuses_foreign_host_header() {
     let a = app(&e, false, None);
     let cookie = (
         "cookie".to_string(),
-        format!("afas_gui_session={}", a.session),
+        format!("{SESSION_COOKIE}={}", a.new_session().unwrap()),
     );
     for h in ["evil.example", "127.0.0.1:9999", "attacker.test:8080"] {
         let r = raw(&a, "/", &[("host".into(), h.into()), cookie.clone()]);
@@ -736,12 +748,13 @@ fn secrets_are_random_and_compared_safely() {
     let e = env("http://127.0.0.1:1");
     let a = app(&e, false, None);
     let b = app(&e, false, None);
-    for s in [&a.csrf, &a.login_token, &a.session] {
+    let (s1, s2) = (a.new_session().unwrap(), a.new_session().unwrap());
+    for s in [&a.csrf, &a.login_token(), &s1, &s2] {
         assert_eq!(s.len(), 64);
         assert!(s.chars().all(|c| c.is_ascii_hexdigit()));
     }
-    assert_ne!(a.session, b.session);
-    assert_ne!(a.login_token, b.login_token);
+    assert_ne!(s1, s2, "every sign-in gets its own session");
+    assert_ne!(a.login_token(), b.login_token());
     assert!(ct_eq("abc", "abc"));
     assert!(!ct_eq("abc", "abd") && !ct_eq("abc", "ab") && !ct_eq("", "a"));
 }
@@ -982,4 +995,186 @@ fn module_settings_show_defaults_and_saving_unchanged_keeps_them() {
             .unwrap()
             .revoke_sessions
     );
+}
+
+// ------------------------------------------------------------------ sessions (ASVS V7)
+
+fn with_session(id: &str) -> Vec<(String, String)> {
+    vec![
+        ("host".into(), "127.0.0.1:8080".into()),
+        ("cookie".into(), format!("{SESSION_COOKIE}={id}")),
+    ]
+}
+
+fn post_as(a: &App, id: &str, path: &str, body: &str) -> Response {
+    handle(
+        a,
+        &Request {
+            method: "POST",
+            path,
+            remote: Some("127.0.0.1".parse().unwrap()),
+            headers: &with_session(id),
+            body: body.as_bytes(),
+        },
+    )
+}
+
+#[test]
+fn sessions_end_after_inactivity_and_after_their_maximum_lifetime() {
+    let e = env("http://127.0.0.1:1");
+    let mut a = app(&e, false, None);
+    let id = a.new_session().unwrap();
+    assert_eq!(raw(&a, "/", &with_session(&id)).status, 200);
+    // Inactivity.
+    a.idle_timeout = std::time::Duration::ZERO;
+    assert_eq!(raw(&a, "/", &with_session(&id)).status, 401);
+    // Ended means gone: restoring the timeout does not bring it back.
+    a.idle_timeout = afas_entra_sync::web::IDLE_TIMEOUT;
+    assert_eq!(raw(&a, "/", &with_session(&id)).status, 401);
+    // Maximum lifetime, even when active.
+    let id = a.new_session().unwrap();
+    a.max_lifetime = std::time::Duration::ZERO;
+    assert_eq!(raw(&a, "/", &with_session(&id)).status, 401);
+    let audit = std::fs::read_to_string(e.state("audit.log")).unwrap();
+    assert!(audit.contains("session expired"), "{audit}");
+}
+
+#[test]
+fn login_link_expires_and_wrong_tokens_are_logged() {
+    let e = env("http://127.0.0.1:1");
+    let mut a = app(&e, false, None);
+    let host = [("host".to_string(), "127.0.0.1:8080".to_string())];
+    // Wrong token: refused, the real link stays valid.
+    let link = a.login_token();
+    assert_eq!(raw(&a, "/login?token=00", &host).status, 403);
+    assert_eq!(a.login_token(), link);
+    // Expired link: refused and replaced.
+    a.login_ttl = std::time::Duration::ZERO;
+    assert_eq!(raw(&a, &format!("/login?token={link}"), &host).status, 403);
+    assert_ne!(a.login_token(), link);
+    // Successful sign-in is logged with where it came from.
+    a.login_ttl = afas_entra_sync::web::LOGIN_TTL;
+    let ok = raw(&a, &format!("/login?token={}", a.login_token()), &host);
+    assert_eq!(ok.status, 303);
+    let audit = std::fs::read_to_string(e.state("audit.log")).unwrap();
+    assert_eq!(audit.matches("\"login refused\"").count(), 2, "{audit}");
+    assert!(audit.contains("wrong token") && audit.contains("expired or already used"));
+    assert!(audit.contains("\"action\":\"login\"") && audit.contains("from 127.0.0.1"));
+}
+
+#[test]
+fn sign_out_ends_the_session_also_in_read_only_mode() {
+    let e = env("http://127.0.0.1:1");
+    for ro in [false, true] {
+        let a = app(&e, ro, None);
+        let id = a.new_session().unwrap();
+        let page = raw(&a, "/", &with_session(&id)).text();
+        assert!(page.contains("action=/logout"), "sign-out button");
+        // Without the form token: refused.
+        assert_eq!(post_as(&a, &id, "/logout", "").status, 403);
+        assert_eq!(raw(&a, "/", &with_session(&id)).status, 200);
+        let r = post_as(&a, &id, "/logout", &format!("csrf={}", a.csrf));
+        assert_eq!(r.status, 200, "read_only={ro}");
+        assert!(r.set_cookie.unwrap().contains("Max-Age=0"));
+        assert_eq!(raw(&a, "/", &with_session(&id)).status, 401);
+        assert_eq!(a.session_count(), 0);
+    }
+    let audit = std::fs::read_to_string(e.state("audit.log")).unwrap();
+    assert_eq!(audit.matches("\"logout\"").count(), 2);
+}
+
+#[test]
+fn sessions_are_capped_and_the_oldest_ends_first() {
+    let e = env("http://127.0.0.1:1");
+    let a = app(&e, false, None);
+    let first = a.new_session().unwrap();
+    for _ in 1..MAX_SESSIONS {
+        a.new_session().unwrap();
+    }
+    assert_eq!(a.session_count(), MAX_SESSIONS);
+    let newest = a.new_session().unwrap();
+    assert_eq!(a.session_count(), MAX_SESSIONS);
+    assert_eq!(raw(&a, "/", &with_session(&first)).status, 401);
+    assert_eq!(raw(&a, "/", &with_session(&newest)).status, 200);
+}
+
+#[test]
+fn proxy_mode_has_no_local_sign_out() {
+    let e = env("http://127.0.0.1:1");
+    let proxy: IpAddr = "10.0.0.5".parse().unwrap();
+    let a = app(&e, false, Some(proxy));
+    let r = handle(
+        &a,
+        &Request {
+            method: "GET",
+            path: "/",
+            remote: Some(proxy),
+            headers: &[("x-authentik-username".into(), "ward".into())],
+            body: b"",
+        },
+    );
+    assert_eq!(r.status, 200);
+    assert!(!r.text().contains("action=/logout"));
+}
+
+#[test]
+fn all_sessions_can_be_ended_and_refused_form_tokens_are_logged() {
+    let e = env("http://127.0.0.1:1");
+    let a = app(&e, false, None);
+    let mine = a.new_session().unwrap();
+    let other = a.new_session().unwrap();
+    let page = raw(&a, "/gui", &with_session(&mine)).text();
+    assert!(
+        page.contains("2 active") && page.contains("Sign out all sessions"),
+        "{page}"
+    );
+    // A POST with a wrong form token is refused and logged.
+    assert_eq!(
+        post_as(&a, &mine, "/settings/safety", "csrf=nope").status,
+        403
+    );
+    let r = post_as(&a, &mine, "/logout", &format!("csrf={}&all=1", a.csrf));
+    assert_eq!(r.status, 200);
+    for id in [&mine, &other] {
+        assert_eq!(raw(&a, "/", &with_session(id)).status, 401);
+    }
+    let audit = std::fs::read_to_string(e.state("audit.log")).unwrap();
+    assert!(
+        audit.contains("\"form token refused\"") && audit.contains("all sessions"),
+        "{audit}"
+    );
+}
+
+#[test]
+fn only_get_and_post_are_answered() {
+    let e = env("http://127.0.0.1:1");
+    let a = app(&e, false, None);
+    let id = a.new_session().unwrap();
+    for m in ["PUT", "DELETE", "TRACE", "OPTIONS", "PATCH"] {
+        let r = handle(
+            &a,
+            &Request {
+                method: m,
+                path: "/",
+                remote: Some("127.0.0.1".parse().unwrap()),
+                headers: &with_session(&id),
+                body: b"",
+            },
+        );
+        assert_eq!(r.status, 405, "{m}");
+    }
+}
+
+#[test]
+fn request_body_limit_is_exactly_64_kib() {
+    let e = env("http://127.0.0.1:1");
+    let a = app(&e, false, None);
+    let id = a.new_session().unwrap();
+    let base = format!("csrf={}&x=", a.csrf);
+    let at_limit = base.clone() + &"a".repeat(64 * 1024 - base.len());
+    assert_eq!(at_limit.len(), 64 * 1024);
+    // At the limit the request is read (and then refused for its content, not its size).
+    assert_ne!(post_as(&a, &id, "/settings/safety", &at_limit).status, 413);
+    let over = at_limit + "a";
+    assert_eq!(post_as(&a, &id, "/settings/safety", &over).status, 413);
 }

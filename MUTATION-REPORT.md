@@ -66,3 +66,11 @@ caught), 107 unviable.
 | `joiner.rs:181` `>` → `>=` | Equal to the nanosecond: both choices give the same moment |
 | `leaver.rs:31` `>` → `>=` | A start date of today with an end date in the past is refused when the data is read |
 | `roles.rs:88` `>` → `>=` | On the start date someone is active, so this branch is never reached for start = today |
+
+## GUI sign-in and sessions (0.9.3)
+
+Scope: the session store, login link, sign-out and access checks in `web.rs`
+(`App::new_session`, `touch_session`, `end_session`, `rotate_login`, `local_access`,
+`handle`, `ct_eq`), tested against `tests/web.rs`. 44 mutants: 41 caught, 2 unviable,
+1 missed (the exact 64 KiB body limit), now covered by `request_body_limit_is_exactly_64_kib`
+and caught on a re-run. No mutants remain.

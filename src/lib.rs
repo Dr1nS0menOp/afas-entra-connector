@@ -4,6 +4,11 @@
 //! API-driven inbound provisioning. See README.md.
 
 #![forbid(unsafe_code)]
+// No panics in production code: errors are values. (Tests may use unwrap.)
+#![cfg_attr(
+    not(test),
+    deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)
+)]
 
 pub mod afas;
 pub mod config;

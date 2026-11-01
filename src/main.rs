@@ -1,6 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 The afas-entra-sync Authors
 #![forbid(unsafe_code)]
+// No panics in production code: errors are values. (Tests may use unwrap.)
+#![cfg_attr(
+    not(test),
+    deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)
+)]
 
 use afas_entra_sync::config::Config;
 use afas_entra_sync::entra::{Credential, TokenProvider, read_logs};
@@ -444,9 +449,18 @@ fn install_cmd(cmd: Cmd) -> i32 {
                     .ok()
                     .filter(|t| !t.trim().is_empty()),
             };
-            let binary = match std::env::current_exe() {
-                Ok(b) => b,
-                Err(e) => return fail(&AppError::Internal(e.to_string())),
+            // Install exactly the program that is running: /proc/self/exe is its image,
+            // even if the file at its path was replaced since it started.
+            let proc_exe = std::path::PathBuf::from("/proc/self/exe");
+            let binary = if proc_exe.exists() {
+                proc_exe
+            } else {
+                // Only where /proc is missing (not Linux, which the installer targets).
+                // nosemgrep (current-exe): fallback only, see above
+                match std::env::current_exe() {
+                    Ok(b) => b,
+                    Err(e) => return fail(&AppError::Internal(e.to_string())),
+                }
             };
             install(
                 &RealSystem,

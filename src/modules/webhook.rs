@@ -107,23 +107,14 @@ pub fn detect(
     out
 }
 
-/// HMAC-SHA256 (RFC 2104).
+/// HMAC-SHA256 (RFC 2104), computed by aws-lc (the cryptographic library rustls uses);
+/// nothing cryptographic is implemented here.
 pub fn hmac_sha256(key: &[u8], msg: &[u8]) -> [u8; 32] {
-    use sha2::{Digest, Sha256};
-    let mut k = [0u8; 64];
-    if key.len() > 64 {
-        k[..32].copy_from_slice(&Sha256::digest(key));
-    } else {
-        k[..key.len()].copy_from_slice(key);
-    }
-    let mut inner = Sha256::new();
-    inner.update(k.map(|b| b ^ 0x36));
-    inner.update(msg);
-    let ih = inner.finalize();
-    let mut outer = Sha256::new();
-    outer.update(k.map(|b| b ^ 0x5c));
-    outer.update(ih);
-    outer.finalize().into()
+    use aws_lc_rs::hmac;
+    let tag = hmac::sign(&hmac::Key::new(hmac::HMAC_SHA256, key), msg);
+    let mut out = [0u8; 32];
+    out.copy_from_slice(tag.as_ref());
+    out
 }
 
 pub fn hex(b: &[u8]) -> String {
