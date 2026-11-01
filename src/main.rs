@@ -32,6 +32,21 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
+    /// Check everything (config, secrets, AFAS, Entra, permissions, certificates, TLS,
+    /// schedule) and say how to fix what is wrong. Read-only. Exit 0 all good, 3 warnings,
+    /// 61 something to fix.
+    Doctor {
+        /// JSON instead of readable text.
+        #[arg(long)]
+        json: bool,
+    },
+    /// List the fields the AFAS GetConnector returns, the kind of data in each and which
+    /// setting they are mapped to. Shows no personal data, so safe to share.
+    AfasFields {
+        /// JSON instead of a table.
+        #[arg(long)]
+        json: bool,
+    },
     /// Only check the configuration.
     CheckConfig,
     /// Fetch AFAS, build the plan and (with --apply) upload to Entra.
@@ -160,21 +175,6 @@ enum Cmd {
         /// CSV instead of JSON.
         #[arg(long)]
         csv: bool,
-    },
-    /// Check everything (config, secrets, AFAS, Entra, permissions, certificates, TLS,
-    /// schedule) and say how to fix what is wrong. Read-only. Exit 0 all good, 3 warnings,
-    /// 61 something to fix.
-    Doctor {
-        /// JSON instead of readable text.
-        #[arg(long)]
-        json: bool,
-    },
-    /// List the fields the AFAS GetConnector returns, the kind of data in each and which
-    /// setting they are mapped to. Shows no personal data, so safe to share.
-    AfasFields {
-        /// JSON instead of a table.
-        #[arg(long)]
-        json: bool,
     },
     /// Manual, time-limited exceptions to the role rules.
     #[command(subcommand)]

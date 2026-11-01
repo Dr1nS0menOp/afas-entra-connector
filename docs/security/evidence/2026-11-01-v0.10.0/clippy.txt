@@ -1,1 +1,2 @@
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.23s
+    Checking afas-entra-sync v0.10.0 (.)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.79s
