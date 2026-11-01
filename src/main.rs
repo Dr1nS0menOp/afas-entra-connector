@@ -167,6 +167,11 @@ fn real_main() -> i32 {
                 allow_mass_disable,
                 dump_payload,
                 use_system_proxy: true,
+                actor: if std::env::var_os("INVOCATION_ID").is_some() {
+                    "systemd".into()
+                } else {
+                    "cli".into()
+                },
             };
             match run(&cfg, &opts, &sleep) {
                 Ok(r) => {

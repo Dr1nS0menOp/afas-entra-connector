@@ -1089,6 +1089,7 @@ fn post_dry_run(app: &App, form: &[(String, String)], user: &str) -> Response {
         None => "dry-run".into(),
     };
     let dir2 = dir.clone();
+    let actor = format!("gui:{user}");
     start_run(app, &label, user, &dir, move || {
         let cfg = match Config::load(&cfg_path) {
             Ok(c) => c,
@@ -1100,6 +1101,7 @@ fn post_dry_run(app: &App, form: &[(String, String)], user: &str) -> Response {
             allow_mass_disable: false,
             dump_payload: keep_payload.then(|| dir2.join(PAYLOAD_FILE)),
             use_system_proxy: proxy,
+            actor: actor.clone(),
         };
         let s = |d: Duration| sleep(d);
         match run(&cfg, &opts, &s) {
@@ -1132,6 +1134,7 @@ fn post_apply(app: &App, l: &Layers, form: &[(String, String)], user: &str) -> R
     } else {
         "sync"
     };
+    let actor = format!("gui:{user}");
     start_run(app, label, user, &l.config.state.dir, move || {
         let cfg = match Config::load(&cfg_path) {
             Ok(c) => c,
@@ -1143,6 +1146,7 @@ fn post_apply(app: &App, l: &Layers, form: &[(String, String)], user: &str) -> R
             allow_mass_disable: allow_mass,
             dump_payload: None,
             use_system_proxy: proxy,
+            actor: actor.clone(),
         };
         let s = |d: Duration| sleep(d);
         match run(&cfg, &opts, &s) {
