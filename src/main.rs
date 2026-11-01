@@ -126,6 +126,47 @@ enum Cmd {
         #[arg(long, default_value_t = 120)]
         since_minutes: i64,
     },
+    /// Access history from the modules: who got or lost which access, when.
+    Report {
+        /// Only this employee number.
+        #[arg(long)]
+        employee: Option<String>,
+        /// From this date (YYYY-MM-DD).
+        #[arg(long)]
+        since: Option<NaiveDate>,
+        /// CSV instead of JSON.
+        #[arg(long)]
+        csv: bool,
+    },
+    /// Manual, time-limited exceptions to the role rules.
+    #[command(subcommand)]
+    Exception(ExceptionCmd),
+}
+
+#[derive(Subcommand)]
+enum ExceptionCmd {
+    /// Add an exception: keep someone in (include) or out of (exclude) a group until a date.
+    Add {
+        #[arg(long)]
+        employee: String,
+        /// Object ID of a group from the role rules.
+        #[arg(long)]
+        group: String,
+        #[arg(long, value_parser = ["include", "exclude"])]
+        kind: String,
+        /// Last day (inclusive), at most one year ahead.
+        #[arg(long)]
+        until: NaiveDate,
+        #[arg(long)]
+        reason: String,
+    },
+    /// List exceptions (expired ones are marked).
+    List,
+    /// Remove an exception by id.
+    Remove {
+        #[arg(long)]
+        id: String,
+    },
 }
 
 fn main() {
@@ -204,6 +245,25 @@ fn real_main() -> i32 {
         }
         Cmd::GuiEnable | Cmd::Install { .. } | Cmd::Uninstall { .. } => exit::INTERNAL,
         Cmd::CheckTls => check_tls(&cfg),
+        Cmd::Report {
+            employee,
+            since,
+            csv,
+        } => {
+            use afas_entra_sync::modules::records::{access_csv, read_access};
+            match read_access(&cfg.state.dir, employee.as_deref(), since) {
+                Ok(entries) => {
+                    if csv {
+                        print!("{}", access_csv(&entries));
+                    } else {
+                        print_json(&entries);
+                    }
+                    exit::OK
+                }
+                Err(e) => fail(&AppError::Config(e)),
+            }
+        }
+        Cmd::Exception(x) => exception_cmd(&cfg, x),
         Cmd::CheckLogs { since_minutes } => {
             if !(1..=10_080).contains(&since_minutes) {
                 return fail(&AppError::Config(
@@ -281,6 +341,66 @@ fn gui_enable(path: &std::path::Path) -> i32 {
             exit::OK
         }
         Err(e) => fail(&AppError::Internal(e)),
+    }
+}
+
+fn exception_cmd(cfg: &Config, x: ExceptionCmd) -> i32 {
+    use afas_entra_sync::modules::records::{
+        ExceptionKind, add_exception, load_exceptions, remove_exception,
+    };
+    let dir = &cfg.state.dir;
+    let today = chrono::Utc::now().with_timezone(&cfg.tz()).date_naive();
+    let who = std::env::var("SUDO_USER")
+        .or_else(|_| std::env::var("USER"))
+        .unwrap_or_else(|_| "cli".into());
+    let res = match x {
+        ExceptionCmd::Add {
+            employee,
+            group,
+            kind,
+            until,
+            reason,
+        } => {
+            let k = if kind == "include" {
+                ExceptionKind::Include
+            } else {
+                ExceptionKind::Exclude
+            };
+            add_exception(dir, &employee, &group, k, until, &reason, &who, today).map(|id| {
+                afas_entra_sync::web::audit(
+                    dir,
+                    &format!("cli:{who}"),
+                    "exception added",
+                    &format!("{id}: {kind} {employee} in {group} until {until}: {reason}"),
+                );
+                println!("{id}");
+            })
+        }
+        ExceptionCmd::List => load_exceptions(dir).map(|x| {
+            let rows: Vec<_> = x
+                .items
+                .iter()
+                .map(|e| {
+                    let mut v = serde_json::to_value(e).unwrap_or_default();
+                    v["expired"] = serde_json::json!(e.until < today);
+                    v
+                })
+                .collect();
+            print_json(&rows);
+        }),
+        ExceptionCmd::Remove { id } => remove_exception(dir, &id).map(|e| {
+            afas_entra_sync::web::audit(
+                dir,
+                &format!("cli:{who}"),
+                "exception removed",
+                &format!("{}: {} {}", e.id, e.employee_id, e.group_id),
+            );
+            println!("removed {}", e.id);
+        }),
+    };
+    match res {
+        Ok(()) => exit::OK,
+        Err(e) => fail(&AppError::Config(e)),
     }
 }
 

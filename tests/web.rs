@@ -774,3 +774,148 @@ fn tls_settings_are_shown_locked_and_cannot_be_changed() {
         "hand-written TLS override refused"
     );
 }
+
+// ------------------------------------------------------------------ modules
+
+const GRP: &str = "a1a1a1a1-0000-0000-0000-000000000001";
+
+fn roles_toml(dir: &std::path::Path) -> String {
+    format!(
+        "\n[roles]\nenabled = false\nclient_id = \"c0000000-0000-0000-0000-000000000001\"\ncertificate_pem = \"{}\"\nprivate_key_pem = \"{}\"\ngroup_prefix = \"AFAS-\"\n[[roles.rule]]\ngroup_id = \"{GRP}\"\nname = \"AFAS-ICT\"\ndepartment = [\"ICT\"]\n",
+        fixture("test-cert.pem"),
+        dir.join("test-key.pem").display()
+    )
+}
+
+#[test]
+fn module_pages_without_setup_show_how_and_refuse_saving() {
+    let e = env("http://127.0.0.1:1");
+    let a = app(&e, false, None);
+    let page = get(&a, "/settings/roles").text();
+    assert!(
+        page.contains("Not set up") && page.contains("[roles]"),
+        "{page}"
+    );
+    assert!(!page.contains("Save changes"));
+    let r = post(
+        &a,
+        "/settings/roles",
+        &format!("{}&roles.enabled=on", csrf(&a)),
+    );
+    assert_eq!(r.status, 409);
+    assert!(!e.state("overrides.toml").exists());
+    for p in [
+        "/modules",
+        "/access",
+        "/exceptions",
+        "/settings/joiner",
+        "/settings/leaver",
+    ] {
+        assert_eq!(get(&a, p).status, 200, "{p}");
+    }
+}
+
+#[test]
+fn roles_settings_exceptions_and_access_export() {
+    let e0 = env("http://127.0.0.1:1");
+    // Reuse the env's directory layout: the key copy lives next to afas.token.
+    let toml =
+        std::fs::read_to_string(&e0.cfg_path).unwrap() + &roles_toml(e0.cfg_path.parent().unwrap());
+    std::fs::write(&e0.cfg_path, toml).unwrap();
+    let e = e0;
+    let a = app(&e, false, None);
+    // Modules page lists the rule.
+    let m = get(&a, "/modules").text();
+    assert!(
+        m.contains("AFAS-ICT") && m.contains("department: ICT"),
+        "{m}"
+    );
+    // Settings: switch the module on through the GUI layer.
+    let r = post(
+        &a,
+        "/settings/roles",
+        &format!(
+            "{}&roles.enabled=on&roles.keep_leavers_days=30&roles.max_changes_per_run=25",
+            csrf(&a)
+        ),
+    );
+    assert_eq!(r.status, 303, "{}", r.text());
+    let c = Config::load(&e.cfg_path).unwrap();
+    let rc = c.roles.unwrap();
+    assert!(rc.enabled && rc.keep_leavers_days == 30 && rc.max_changes_per_run == 25);
+    // Exceptions: unknown group refused, rule group accepted, then removed.
+    let until = (chrono::Utc::now().date_naive() + chrono::Days::new(10)).to_string();
+    let bad = post(
+        &a,
+        "/exceptions/add",
+        &format!(
+            "{}&employee=00001&group=a1a1a1a1-0000-0000-0000-00000000ffff&kind=include&until={until}&reason=x",
+            csrf(&a)
+        ),
+    );
+    assert_eq!(bad.status, 400);
+    assert!(bad.text().contains("not in the role rules"));
+    let ok = post(
+        &a,
+        "/exceptions/add",
+        &format!(
+            "{}&employee=00001&group={GRP}&kind=exclude&until={until}&reason=Project+X",
+            csrf(&a)
+        ),
+    );
+    assert_eq!(ok.status, 303);
+    let page = get(&a, "/exceptions").text();
+    assert!(page.contains("Project X") && page.contains("keep out"));
+    let x = afas_entra_sync::modules::records::load_exceptions(&e.state("")).unwrap();
+    assert_eq!(x.items.len(), 1);
+    assert_eq!(x.items[0].created_by, "local");
+    let r = post(
+        &a,
+        "/exceptions/remove",
+        &format!("{}&id={}", csrf(&a), x.items[0].id),
+    );
+    assert_eq!(r.status, 303);
+    assert!(
+        afas_entra_sync::modules::records::load_exceptions(&e.state(""))
+            .unwrap()
+            .items
+            .is_empty()
+    );
+    // Access log export is a CSV download and is audited.
+    afas_entra_sync::modules::records::append_access(
+        &e.state(""),
+        &afas_entra_sync::modules::records::AccessEntry {
+            utc: "2026-11-01T10:00:00Z".into(),
+            module: "roles".into(),
+            action: "add_to_group".into(),
+            employee_id: Some("00001".into()),
+            upn: Some("a@b.nl".into()),
+            target: Some("AFAS-ICT".into()),
+            ok: true,
+            detail: None,
+            actor: "test".into(),
+        },
+    )
+    .unwrap();
+    assert!(
+        get(&a, "/access?employee=00001")
+            .text()
+            .contains("add to group")
+    );
+    assert!(
+        !get(&a, "/access?employee=99999")
+            .text()
+            .contains("add to group")
+    );
+    let csv = get(&a, "/access.csv?employee=00001");
+    assert_eq!(csv.content_type, "text/csv; charset=utf-8");
+    assert!(csv.text().starts_with("utc,module,action"));
+    let audit = std::fs::read_to_string(e.state("audit.log")).unwrap();
+    for w in [
+        "exception added",
+        "exception removed",
+        "access log exported",
+    ] {
+        assert!(audit.contains(w), "{w}");
+    }
+}
