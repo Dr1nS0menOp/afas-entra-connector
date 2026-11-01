@@ -1200,4 +1200,6 @@ fn health_check_runs_from_the_gui_and_shows_fixes() {
     assert!(page.contains("GetConnector"), "{page}");
     assert!(page.contains("Grant admin consent"), "{page}");
     assert!(page.contains("exit code 61"), "{page}");
+    assert!(page.contains("1 problem to fix") && page.contains("<li class=fail>"), "{page}");
+    assert!(page.contains("What to do: grant the application permission ProvisioningLog.Read.All"));
 }

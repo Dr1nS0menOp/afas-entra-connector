@@ -829,14 +829,10 @@ fn certificates(cfg: &Config, o: &Options<'_>, out: &mut Out) {
     const A: &str = "Certificates";
     for c in crate::ux::certificates(cfg, o.now) {
         let name = capitalise(&format!("{} app", c.app));
-        let renew = if c.app == "provisioning" {
-            "sudo afas-entra-sync install --renew-cert, then upload the new cert.pem to the app registration".to_string()
-        } else {
-            format!(
-                "sudo afas-entra-sync module-setup {} --renew, then upload the new certificate",
-                module_key(&c.app)
-            )
-        };
+        let renew = format!(
+            "{}, then upload the new certificate to the app registration",
+            crate::ux::renew_command(&c.app)
+        );
         match (&c.expires, c.days_left) {
             (Err(e), _) => out.add(
                 A,
@@ -870,14 +866,6 @@ fn capitalise(s: &str) -> String {
         .unwrap_or_default()
 }
 
-fn module_key(app: &str) -> &'static str {
-    match app {
-        "roles" => "roles",
-        "new hires" => "joiner",
-        _ => "leaver",
-    }
-}
-
 fn tls(cfg: &Config, out: &mut Out) {
     const A: &str = "TLS";
     let tls_cfg = match crate::tls::client_config(&cfg.tls) {
@@ -896,9 +884,10 @@ fn tls(cfg: &Config, out: &mut Out) {
             out.add(
                 A,
                 name,
-                Level::Warn,
-                format!("{url} is not HTTPS"),
-                Some("use the https:// address".into()),
+                Level::Info,
+                // The config allows http:// only for a local test address.
+                "local test address without TLS; not checked",
+                None,
             );
             continue;
         }
@@ -974,9 +963,20 @@ fn schedule(cfg: &Config, o: &Options<'_>, out: &mut Out) {
     let age_h = DateTime::parse_from_rfc3339(when)
         .map(|t| (o.now - t.with_timezone(&Utc)).num_hours())
         .unwrap_or(0);
-    let mode = v["mode"].as_str().unwrap_or("?");
+    let mode = match v["mode"].as_str() {
+        Some("apply") => "sync",
+        Some("dry-run") => "test run",
+        _ => "run",
+    };
+    let at = DateTime::parse_from_rfc3339(when)
+        .map(|t| {
+            t.with_timezone(&Utc)
+                .format("%Y-%m-%d %H:%M UTC")
+                .to_string()
+        })
+        .unwrap_or_else(|_| when.to_string());
     let detail = format!(
-        "{mode} {when}, exit {code}: {}",
+        "{mode} at {at}, exit {code}: {}",
         v["result"].as_str().unwrap_or("")
     );
     match code {
@@ -996,7 +996,7 @@ fn schedule(cfg: &Config, o: &Options<'_>, out: &mut Out) {
             Some("run afas-entra-sync sync to see the cause".into()),
         ),
     }
-    if age_h > 3 && mode == "apply" {
+    if age_h > 3 && mode == "sync" {
         out.add(
             A,
             "Freshness",

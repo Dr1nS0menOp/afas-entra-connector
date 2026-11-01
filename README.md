@@ -51,6 +51,7 @@ The optional admin GUI (off by default, local or behind your SSO proxy). Demo da
 | --- | --- |
 | ![Overview of a run](docs/images/overview.png) | ![Modules](docs/images/modules.png) |
 | ![New hires settings](docs/images/new-hires.png) | ![Access log](docs/images/access-log.png) |
+| ![Health check](docs/images/health-check.png) | |
 
 ## Words used
 

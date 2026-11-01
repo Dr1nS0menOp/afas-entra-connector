@@ -383,7 +383,7 @@ fn doctor_and_afas_fields_via_cli() {
         .map(|c| c["level"].as_str().unwrap())
         .collect();
     assert!(!levels.contains(&"fail"), "{checks:#}");
-    // Client secret and plain-HTTP test endpoints are warnings: exit 3.
+    // A client secret instead of a certificate is a warning: exit 3.
     assert!(levels.contains(&"warn"));
     assert_eq!(out.status.code(), Some(3), "{checks:#}");
 

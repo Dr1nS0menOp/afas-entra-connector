@@ -1651,11 +1651,78 @@ fn post_doctor(app: &App, user: &str) -> Response {
             tls: true,
         };
         let checks = crate::doctor::run(&cfg, &cfg_path, &o);
+        // Stored as JSON; the Run page renders it as a list (`health_html`).
         (
             crate::doctor::exit_code(&checks),
-            crate::doctor::render(&checks).trim().to_string(),
+            serde_json::to_string(&checks).unwrap_or_default(),
         )
     })
+}
+
+/// The health check result as a list per area, problems first in each area's order.
+fn health_html(d: &RunDone) -> Option<String> {
+    let checks: Vec<serde_json::Value> = serde_json::from_str(&d.summary).ok()?;
+    let count = |l: &str| checks.iter().filter(|c| c["level"] == l).count();
+    let (fails, warns) = (count("fail"), count("warn"));
+    let (tone, title) = match (fails, warns) {
+        (0, 0) => ("ok", "Everything checks out".to_string()),
+        (0, w) => (
+            "warn",
+            format!(
+                "{w} warning{}, nothing is broken",
+                if w == 1 { "" } else { "s" }
+            ),
+        ),
+        (f, _) => (
+            "bad",
+            format!("{f} problem{} to fix", if f == 1 { "" } else { "s" }),
+        ),
+    };
+    let mut b = format!(
+        "<section class=\"verdict {tone}\"><p class=kicker>Health check by {}, finished at {}, exit code {}</p><h2>{}</h2>{}</section><section class=health>",
+        esc(&d.user),
+        esc(&fmt_time(&d.finished)),
+        d.exit_code,
+        esc(&title),
+        if fails + warns > 0 {
+            "<p>Fix them top to bottom, then run the health check again.</p>"
+        } else {
+            "<p>Nothing to do.</p>"
+        }
+    );
+    let mut area = "";
+    for c in &checks {
+        let a = c["area"].as_str().unwrap_or("");
+        if a != area {
+            if !area.is_empty() {
+                b.push_str("</ul>");
+            }
+            area = a;
+            let _ = write!(b, "<h3>{}</h3><ul>", esc(a));
+        }
+        let level = c["level"].as_str().unwrap_or("info");
+        let mark = match level {
+            "ok" => "OK",
+            "warn" => "Warning",
+            "fail" => "Problem",
+            _ => "Note",
+        };
+        let _ = write!(
+            b,
+            "<li class={level}><span class=mark>{mark}</span><div><b>{}</b> {}",
+            esc(c["check"].as_str().unwrap_or("")),
+            esc(c["detail"].as_str().unwrap_or(""))
+        );
+        if let Some(f) = c["fix"].as_str() {
+            let _ = write!(b, "<p class=fix>What to do: {}</p>", esc(f));
+        }
+        b.push_str("</div></li>");
+    }
+    if !area.is_empty() {
+        b.push_str("</ul>");
+    }
+    b.push_str("</section>");
+    Some(b)
 }
 
 fn post_check_tls(app: &App, user: &str) -> Response {
@@ -1855,8 +1922,13 @@ fn page_overview(app: &App, l: &Layers) -> String {
     }
     let _ = write!(
         b,
-        "</dl><p class=note>{} sent in {} API calls. {} new disables.</p></section>",
+        "</dl><p class=note>{} {} {} API calls. {} new disables.</p></section>",
         n("sent_total"),
+        if r["mode"] == "apply" {
+            "sent in"
+        } else {
+            "would be sent in"
+        },
         n("api_calls_needed"),
         n("new_disables")
     );
@@ -1943,6 +2015,10 @@ fn page_run(app: &App, l: &Layers, error: Option<&str>) -> String {
                 esc(&cur.user),
                 esc(&capital(&cur.kind))
             );
+        } else if let Some(d) = &st.last
+            && let Some(h) = (d.kind == "health check").then(|| health_html(d)).flatten()
+        {
+            b.push_str(&h);
         } else if let Some(d) = &st.last {
             let tone = match d.exit_code {
                 0 => "ok",
@@ -2683,6 +2759,11 @@ section{margin:0 0 36px}.lead{font-size:18px;color:var(--muted);max-width:62ch;m
 .verdict.ok{border-color:var(--ok)}.verdict.warn{border-color:var(--warn)}.verdict.bad{border-color:var(--bad)}.verdict.busy{border-color:var(--accent)}
 .verdict p{margin:0;max-width:70ch}.kicker{color:var(--muted);font-size:14px}
 .verdict pre{white-space:pre-wrap;font:inherit;margin:4px 0 0;max-width:72ch}
+.health{max-width:860px}.health h3{font-size:16px;margin:22px 0 6px}.health ul{list-style:none;margin:0;padding:0;border-top:1px solid var(--line)}
+.health li{display:grid;grid-template-columns:6.5em 1fr;gap:12px;padding:8px 0;border-bottom:1px solid var(--line)}
+.health .mark{font-size:13px;font-weight:600;padding-top:2px}.health li.ok .mark{color:var(--ok)}.health li.warn .mark{color:var(--warn)}
+.health li.fail .mark{color:var(--bad)}.health li.info .mark{color:var(--muted)}.health li.ok div,.health li.info div{color:var(--muted)}
+.health li.ok b,.health li.info b{font-weight:500}.health .fix{margin:4px 0 0;color:var(--ink)}
 .flow{display:flex;height:34px;border-radius:5px;overflow:hidden;gap:2px;background:var(--line);margin:14px 0 12px}
 .flow span{min-width:3px}
 .s-active{background:var(--s-active)}.s-pre{background:var(--s-pre)}.s-leave{background:var(--s-leave)}.s-excl{background:var(--s-excl)}.s-skip{background:var(--s-skip)}

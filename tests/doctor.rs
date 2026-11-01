@@ -267,6 +267,22 @@ fn schedule_and_last_run_are_reported() {
     let l = find(&checks, "Last run");
     assert_eq!(l.level, Level::Fail);
     assert!(l.detail.contains("upload refused"));
+
+    // A good sync, but too long ago: the timer is probably not running.
+    let report = json!({"started_utc": (chrono::Utc::now() - chrono::Duration::hours(5)).to_rfc3339(), "mode": "apply", "exit_code": 0, "result": "ok"});
+    std::fs::write(
+        cfg.state.dir.join(afas_entra_sync::state::REPORT_FILE),
+        report.to_string(),
+    )
+    .unwrap();
+    let checks = doctor::run(&cfg, Path::new("c.toml"), &o);
+    let l = find(&checks, "Last run");
+    assert_eq!(l.level, Level::Ok);
+    assert!(
+        l.detail.starts_with("sync at ") && l.detail.ends_with(" UTC, exit 0: ok"),
+        "{l:?}"
+    );
+    assert_eq!(find(&checks, "Freshness").level, Level::Warn);
 }
 
 #[test]

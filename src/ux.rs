@@ -169,6 +169,16 @@ pub fn certificates(cfg: &Config, now: DateTime<Utc>) -> Vec<CertStatus> {
         .collect()
 }
 
+/// The command that renews the certificate of this app registration.
+pub fn renew_command(app: &str) -> &'static str {
+    match app {
+        "provisioning" => "sudo afas-entra-sync install --renew-cert",
+        "roles" => "sudo afas-entra-sync module-setup roles --renew",
+        "new hires" => "sudo afas-entra-sync module-setup joiner --renew",
+        _ => "sudo afas-entra-sync module-setup leaver --renew",
+    }
+}
+
 /// Notices for certificates that expire within `CERT_WARN_DAYS` (or already did), and
 /// whether one is within `CERT_ATTENTION_DAYS`.
 pub fn cert_notices(certs: &[CertStatus]) -> (Vec<String>, bool) {
@@ -179,17 +189,19 @@ pub fn cert_notices(certs: &[CertStatus]) -> (Vec<String>, bool) {
             (Some(d), Ok(date)) if d < 0 => {
                 urgent = true;
                 out.push(format!(
-                    "certificate of the {} app registration ({}) expired on {date}: sign-in fails until it is renewed",
+                    "Certificate of the {} app registration ({}) expired on {date}: sign-in fails until it is renewed ({}, then upload the new one to Entra)",
                     c.app,
-                    c.path.display()
+                    c.path.display(),
+                    renew_command(&c.app)
                 ));
             }
             (Some(d), Ok(date)) if d <= CERT_WARN_DAYS => {
                 urgent |= d <= CERT_ATTENTION_DAYS;
                 out.push(format!(
-                    "certificate of the {} app registration ({}) expires on {date}, in {d} days: renew it (install --renew-cert or docs/MODULES.md) and upload the new one to Entra",
+                    "Certificate of the {} app registration ({}) expires on {date}, in {d} days: renew it ({}) and upload the new one to Entra",
                     c.app,
-                    c.path.display()
+                    c.path.display(),
+                    renew_command(&c.app)
                 ));
             }
             _ => {}
