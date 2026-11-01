@@ -1146,6 +1146,7 @@ pub fn handle(app: &App, r: &Request<'_>) -> Response {
             "/run/check-config" => post_check_config(app, &user),
             "/run/check-logs" => post_check_logs(app, &form, &user),
             "/run/check-tls" => post_check_tls(app, &user),
+            "/run/doctor" => post_doctor(app, &user),
             "/payload/delete" => post_payload_delete(&layers, &user),
             "/gui/off" => post_gui_off(app, &layers, &user),
             "/exceptions/add" => post_exception_add(app, &layers, &form, &user),
@@ -1625,6 +1626,38 @@ fn post_check_logs(app: &App, form: &[(String, String)], user: &str) -> Response
     })
 }
 
+/// The health check (`doctor`): read-only, like the CLI command.
+fn post_doctor(app: &App, user: &str) -> Response {
+    let (cfg_path, sleep, proxy) = (
+        app.opts.config_path.clone(),
+        app.sleep.clone(),
+        app.use_system_proxy,
+    );
+    let dir = match Config::load(&cfg_path) {
+        Ok(c) => c.state.dir,
+        Err(e) => return text(500, &e.to_string()),
+    };
+    start_run(app, "health check", user, &dir, move || {
+        let cfg = match Config::load(&cfg_path) {
+            Ok(c) => c,
+            Err(e) => return (crate::error::exit::DOCTOR, e.to_string()),
+        };
+        let s = |d: Duration| sleep(d);
+        let o = crate::doctor::Options {
+            sleep: &s,
+            use_system_proxy: proxy,
+            now: chrono::Utc::now(),
+            systemctl: &crate::doctor::real_systemctl,
+            tls: true,
+        };
+        let checks = crate::doctor::run(&cfg, &cfg_path, &o);
+        (
+            crate::doctor::exit_code(&checks),
+            crate::doctor::render(&checks).trim().to_string(),
+        )
+    })
+}
+
 fn post_check_tls(app: &App, user: &str) -> Response {
     let cfg_path = app.opts.config_path.clone();
     let dir = match Config::load(&cfg_path) {
@@ -1774,6 +1807,14 @@ fn page_overview(app: &App, l: &Layers) -> String {
         esc(r["today"].as_str().unwrap_or("?")),
         esc(&detail),
     );
+
+    if let Some(n) = r["notices"].as_array().filter(|n| !n.is_empty()) {
+        b.push_str("<section class=\"verdict warn\"><h2>Needs your attention</h2><ul>");
+        for x in n {
+            let _ = write!(b, "<li>{}</li>", esc(x.as_str().unwrap_or("")));
+        }
+        b.push_str("</ul></section>");
+    }
 
     // The flow strip: how the AFAS rows were distributed.
     let parts = [
@@ -1954,8 +1995,9 @@ fn page_run(app: &App, l: &Layers, error: Option<&str>) -> String {
     );
     let _ = write!(
         b,
-        "<section class=action><div><h2>Checks</h2><p>Check the configuration, see which TLS version and key exchange AFAS and Microsoft negotiate, or go through the Microsoft provisioning logs for failed records.</p></div>\
-<div class=row><form method=post action=/run/check-config><input type=hidden name=csrf value={csrf}><button class=quiet{dis}>Check configuration</button></form>\
+        "<section class=action><div><h2>Checks</h2><p>The health check goes through everything (settings, secrets, AFAS fields, Entra sign-in and permissions, certificates, TLS, schedule) and says how to fix what is wrong. It changes nothing. The other checks look at one part.</p></div>\
+<div class=row><form method=post action=/run/doctor><input type=hidden name=csrf value={csrf}><button{dis}>Run health check</button></form>\
+<form method=post action=/run/check-config><input type=hidden name=csrf value={csrf}><button class=quiet{dis}>Check configuration</button></form>\
 <form method=post action=/run/check-tls><input type=hidden name=csrf value={csrf}><button class=quiet{dis}>Check TLS</button></form>\
 <form method=post action=/run/check-logs class=inline><input type=hidden name=csrf value={csrf}><label>Last <input name=minutes value=60 size=5 inputmode=numeric{dis}> minutes</label><button class=quiet{dis}>Check logs</button></form></div></section>"
     );

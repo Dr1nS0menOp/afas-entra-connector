@@ -2057,3 +2057,44 @@ fn a_pass_that_is_not_valid_yet_is_never_deleted() {
         "{j:?}"
     );
 }
+
+// ------------------------------------------------------------------ certificate expiry
+
+fn cert_expiring_in(dir: &std::path::Path, days: i64) -> std::path::PathBuf {
+    use chrono::Datelike;
+    let end = chrono::Utc::now().date_naive() + chrono::Duration::days(days);
+    let mut p = rcgen::CertificateParams::new(vec!["afas-entra-sync".into()]).unwrap();
+    p.not_before = rcgen::date_time_ymd(2020, 1, 1);
+    p.not_after = rcgen::date_time_ymd(end.year(), end.month() as u8, end.day() as u8);
+    let key = rcgen::KeyPair::generate().unwrap();
+    let pem = p.self_signed(&key).unwrap().pem();
+    let path = dir.join(format!("cert-{days}.pem"));
+    std::fs::write(&path, pem).unwrap();
+    path
+}
+
+#[test]
+fn certificate_expiry_is_noticed_and_raised_in_the_last_week() {
+    for (days, notice, exit_code) in [
+        (60, false, exit::OK),
+        (20, true, exit::OK),
+        (5, true, exit::COMPLETED_WITH_EXCLUSIONS),
+        (-1, true, exit::COMPLETED_WITH_EXCLUSIONS),
+    ] {
+        let env = Env::new();
+        let cert = cert_expiring_in(env.dir.path(), days);
+        let mut cfg = env.cfg("");
+        cfg.entra.certificate_pem = Some(cert);
+        let r = go(&cfg, false);
+        assert_eq!(
+            !r.report.notices.is_empty(),
+            notice,
+            "{days}: {:?}",
+            r.report.notices
+        );
+        assert_eq!(r.report.exit_code, exit_code, "{days}: {}", r.report.result);
+        if notice {
+            assert!(r.report.notices[0].contains("provisioning app registration"));
+        }
+    }
+}

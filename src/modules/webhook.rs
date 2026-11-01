@@ -121,7 +121,7 @@ pub fn hex(b: &[u8]) -> String {
     b.iter().map(|x| format!("{x:02x}")).collect()
 }
 
-fn secret(cfg: &WebhookConfig) -> Result<Vec<u8>, String> {
+pub fn secret(cfg: &WebhookConfig) -> Result<Vec<u8>, String> {
     let s = if let Some(var) = &cfg.secret_env {
         std::env::var(var)
             .map_err(|_| format!("environment variable {var} (webhook secret) is not set"))?

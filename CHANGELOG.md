@@ -3,6 +3,37 @@
 All notable changes. Versions follow [Semantic Versioning](https://semver.org/); before
 1.0 a minor version may change configuration.
 
+## 0.10.0 – 2026-11-01
+
+Easier to set up, run and keep running. No configuration changes.
+
+- **`doctor`**: one command that checks the whole chain and says, per line, what to do:
+  configuration, token and key files (mode and owner), the state directory, AFAS (token,
+  GetConnector, every mapped field, a sample of records), the Entra sign-in (with an
+  explanation of common AADSTS codes), the permissions of the provisioning app and of each
+  enabled module, certificate lifetimes, TLS, the systemd timer and the last run.
+  Read-only: it uploads nothing, creates no sign-in codes and sends no mail. Exit 0 all
+  good, 3 warnings, 61 something to fix. Also in the GUI: *Run → Run health check*.
+- **`afas-fields`**: the fields the GetConnector returns, the kind of data in each and
+  which setting uses it; settings that point to a missing field are listed with the fix.
+  Shows no personal data.
+- **`module-setup roles|joiner|leaver`**: creates the module's certificate and key (owned by
+  the service user, key 0600), and prints the Entra steps, the exact permissions, the
+  thumbprint and the config section to add. `--renew` for a new certificate.
+- **No `-c` needed**: the configuration is found via `-c`, `AFAS_ENTRA_SYNC_CONFIG`,
+  `/etc/afas-entra-sync/config.toml` or `./afas-entra-sync.toml`, in that order.
+- **Wrong user caught**: `sync`, `serve`, `gui-enable` and `exception add|remove` refuse to
+  run as root when the state directory belongs to the service user (root-owned files
+  would break the next scheduled run), and show the right `sudo -u` command.
+- **Readable output**: in a terminal, `sync` prints a summary (what changes, what needs
+  attention, the next step) instead of JSON. `--json`, or output to a file, Ansible,
+  Semaphore or systemd, gives the full report as before.
+- **Certificate expiry warnings**: from 30 days before a certificate (provisioning app or
+  a module) expires, the report and the GUI overview say so under `notices`; in the last 7
+  days an otherwise good run ends with exit 3 so monitoring shows it.
+- Docs: the module setup used a wrong owner (`afas-entra-sync:` instead of the service user
+  `afas-sync`) in its `chown` line; replaced by `module-setup`.
+
 ## 0.9.3 – 2026-11-01
 
 Security assurance: self-assessed against **OWASP ASVS 5.0 Level 2** (all 253 Level 1 and 2

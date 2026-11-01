@@ -324,12 +324,21 @@ Start strict with the safety thresholds in `[policy]`; you can always relax them
 **Check:**
 
 ```bash
-sudo -u afas-sync afas-entra-sync -c /etc/afas-entra-sync/config.toml check-config
-sudo -u afas-sync afas-entra-sync -c /etc/afas-entra-sync/config.toml check-tls
+sudo -u afas-sync afas-entra-sync doctor
 ```
 
-A typo or unknown key gives a clear error (exit 10), never a silent default. `check-tls`
-shows the TLS version, cipher and key exchange per endpoint (exit 60 if one fails the policy).
+A typo or unknown key gives a clear error (exit 10), never a silent default. `doctor` then
+goes through the rest: the token and key files, AFAS and every mapped field, the Entra
+sign-in and permissions, the certificate, TLS and the timer. Each problem comes with what to
+do. Fix them top to bottom and run it again until it says "Everything checks out" (exit 0;
+warnings give 3, problems 61).
+
+A field name that does not match? `sudo -u afas-sync afas-entra-sync afas-fields` lists the
+fields your GetConnector returns, what kind of data is in each and which setting uses it. It
+shows no personal data, so you can paste it in a ticket.
+
+For TLS details per endpoint (version, cipher, key exchange): `check-tls` (exit 60 if one
+fails the policy).
 
 ## Step 5 – Existing accounts and test run (dry-run)
 
@@ -338,11 +347,11 @@ Without `--apply` nothing is sent to Microsoft, so this is safe to try.
 **5a. Test run (dry-run).**
 
 ```bash
-sudo -u afas-sync afas-entra-sync -c /etc/afas-entra-sync/config.toml \
-  sync --dump-payload /var/lib/afas-entra-sync/payload.json
+sudo -u afas-sync afas-entra-sync sync --dump-payload /var/lib/afas-entra-sync/payload.json
 ```
 
-The report (JSON on screen and in `/var/lib/afas-entra-sync/last-report.json`) shows:
+On screen you get a short summary; the full report (`--json`, and always in
+`/var/lib/afas-entra-sync/last-report.json`) shows:
 
 - `counts`: active, new hires (still disabled), departing employees (leavers).
 - `exclusions`: skipped records with data errors and why. Have HR fix them before going live.
@@ -415,7 +424,7 @@ Microsoft actually processes. That lets you expand per department.
 **6a. First real run** with the scoping filter on the pilot department:
 
 ```bash
-sudo -u afas-sync afas-entra-sync -c /etc/afas-entra-sync/config.toml sync --apply
+sudo -u afas-sync afas-entra-sync sync --apply
 ```
 
 After 5 to 10 minutes the result is in Enterprise app → Provisioning logs, or via
@@ -519,8 +528,8 @@ A manual test run overwrites the report; the status then shows `(dry-run)`.
 | Code | Meaning | What to do |
 | --- | --- | --- |
 | 0 | All good | Nothing |
-| 3 | Done, but records need attention | `exclusions` and `disappeared_while_active` to HR |
-| 10 | Configuration error | Run `check-config` |
+| 3 | Done, but something needs attention | `exclusions` and `disappeared_while_active` to HR; a certificate that expires within 7 days (`notices`) |
+| 10 | Configuration error | Run `check-config`, then `doctor` |
 | 11 | Another run is active | Double scheduling? |
 | 20 | Safety stop, nothing uploaded | Read the report; cause in AFAS data or threshold |
 | 30 | AFAS error | Token, GetConnector, reachability |
@@ -528,6 +537,7 @@ A manual test run overwrites the report; the status then shows `(dry-run)`.
 | 41 | Upload failed | The next run repairs it; if it persists, see troubleshooting |
 | 50 | `check-logs`: Microsoft reports failures | Read the failure lines |
 | 60 | `check-tls`: an endpoint fails the TLS policy | Network, proxy or TLS inspection |
+| 61 | `doctor`: at least one check failed | The fix is on the line itself |
 
 **Daily limit.** With P1, Microsoft allows 2,000 calls per day, at most 50 employees per call.
 Example with 600 employees and a run every hour:
@@ -541,7 +551,7 @@ Example with 600 employees and a run every hour:
 | What | When | How |
 | --- | --- | --- |
 | Skipped records to HR | On exit 3 | `exclusions` and `disappeared_while_active` from the report |
-| Renew the certificate | A month before expiry | Step 3a again, upload the new `cert.pem`, remove the old one only after a successful run |
+| Renew the certificate | A month before expiry: the report, the GUI and `doctor` say so; in the last 7 days runs end with exit 3 | `sudo afas-entra-sync install --renew-cert` (modules: `module-setup <module> --renew`), upload the new certificate, remove the old one only after a successful run |
 | Renew the AFAS token | When AFAS revokes it, or when staff change | Replace the token file (or secret) |
 | New version | On release | Replace the binary (Ansible verifies the checksum) |
 | Check TLS | After network or firewall changes | `check-tls` |
@@ -659,14 +669,16 @@ turns it back on. Details: README and SECURITY.md.
 
 ## Troubleshooting
 
-Start with `/var/lib/afas-entra-sync/last-report.json`, then the provisioning logs in Entra.
+Start with `sudo -u afas-sync afas-entra-sync doctor` (or *Run → Run health check* in the
+GUI): it checks the whole chain and says what to fix. Then
+`/var/lib/afas-entra-sync/last-report.json`, then the provisioning logs in Entra.
 
 | Symptom | Cause | Fix |
 | --- | --- | --- |
 | Exit 20, `min_records` or `max_drop_percent` | AFAS returned far fewer employees than expected | Check the GetConnector filter or an AFAS outage; change the threshold only if the drop is real |
 | Exit 20, `max_disables_per_run` | Many disables at once | Check the list in the report; if right, once `sync --apply --allow-mass-disable` |
 | Exit 20, `max_invalid_percent` | Many data errors; often a wrong field name or date format | Read `exclusions`, check `[afas.fields]` |
-| Exit 30, "field … is missing" | Field name in config does not match the GetConnector | Fix the name in config or GetConnector |
+| Exit 30, "field … is missing" | Field name in config does not match the GetConnector | `afas-fields` lists what the GetConnector returns; fix the name in config or GetConnector |
 | Exit 30, HTTP 401 from AFAS | Token invalid or not linked to the app connector | New token, step 1b |
 | Exit 10, "accessible by group or others" | Token file or private key too open | `chmod 600` and owner `afas-sync` |
 | Exit 40, AADSTS700027 | Certificate does not match the one in Entra | Upload `cert.pem` again |

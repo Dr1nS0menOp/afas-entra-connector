@@ -52,6 +52,7 @@ the next result is in the repository's Actions and Security tabs.
 | --- | --- | --- |
 | semgrep `current-exe` | `src/main.rs` | Fallback only when `/proc` is missing (the installer targets Linux) |
 | semgrep `temp-dir` | `fuzz/fuzz_targets/gui_request.rs` | Fuzz harness, not shipped |
+| semgrep `args` | `src/main.rs` | The arguments are only echoed in the suggested `sudo -u` command when the wrong user runs the program; no decision depends on them (0.10.0) |
 | detect-secrets | `tests/fixtures/*.pem` | Test-only keys (`tests/fixtures/README.md`) |
 | detect-secrets | `tests/modules.rs`, `tests/module_rules.rs` | Published HMAC test vectors (RFC 4231) and reference values |
 | detect-secrets | `docs/MODULES.md`, `.github/workflows/ci.yml` | The word "secret" next to a variable name |

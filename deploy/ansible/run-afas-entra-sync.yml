@@ -5,7 +5,7 @@
   tasks:
     - name: Sync
       ansible.builtin.command:
-        cmd: /usr/local/bin/afas-entra-sync -c /etc/afas-entra-sync/config.toml sync {{ '--apply' if apply | default(false) | bool else '' }}
+        cmd: /usr/local/bin/afas-entra-sync -c /etc/afas-entra-sync/config.toml sync --json {{ '--apply' if apply | default(false) | bool else '' }}
       register: sync
       changed_when: sync.rc == 0 and (apply | default(false) | bool)
       failed_when: false            # show the report first, then fail

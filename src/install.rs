@@ -371,8 +371,8 @@ fn summary(sys: &dyn System, out: &Outcome, o: &InstallOptions) {
     sys.say(&format!(
         "  1. Upload {CFG_DIR}/cert.pem to the app registration in Entra (Certificates & secrets).\n     Thumbprint shown by Entra: {tp}"
     ));
-    sys.say("  2. Check the TLS connections:  sudo -u afas-sync afas-entra-sync -c /etc/afas-entra-sync/config.toml check-tls");
-    sys.say("  3. Dry-run (sends nothing):     sudo -u afas-sync afas-entra-sync -c /etc/afas-entra-sync/config.toml sync");
+    sys.say("  2. Check everything:            sudo -u afas-sync afas-entra-sync doctor");
+    sys.say("  3. Dry-run (sends nothing):     sudo -u afas-sync afas-entra-sync sync");
     if !o.enable_sync {
         sys.say("  4. Go live (hourly sync):       sudo afas-entra-sync install --enable-sync");
     }
@@ -632,15 +632,164 @@ pub fn build_config(a: &Answers, gui: bool) -> Result<String, String> {
     Ok(text)
 }
 
+/// A module with its own app registration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SetupModule {
+    Roles,
+    Joiner,
+    Leaver,
+}
+
+impl SetupModule {
+    pub fn parse(s: &str) -> Result<Self, String> {
+        match s {
+            "roles" => Ok(Self::Roles),
+            "joiner" | "new-hires" => Ok(Self::Joiner),
+            "leaver" | "departing" => Ok(Self::Leaver),
+            _ => Err(format!("unknown module {s:?}: use roles, joiner or leaver")),
+        }
+    }
+    /// Config section and file prefix.
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Roles => "roles",
+            Self::Joiner => "joiner",
+            Self::Leaver => "leaver",
+        }
+    }
+    pub fn title(self) -> &'static str {
+        match self {
+            Self::Roles => "Roles and licences",
+            Self::Joiner => "New hires (joiner)",
+            Self::Leaver => "Departing employees (leaver)",
+        }
+    }
+    /// Microsoft Graph application permissions granted in Entra.
+    pub fn permissions(self) -> &'static [&'static str] {
+        match self {
+            Self::Roles => &["GroupMember.ReadWrite.All", "User.Read.All"],
+            Self::Joiner => &["UserAuthMethod-TAP.ReadWrite.All", "User.Read.All"],
+            Self::Leaver => &[
+                "User.RevokeSessions.All",
+                "User.Read.All",
+                "MailboxSettings.ReadWrite",
+            ],
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ModuleSetupOptions {
+    pub root: PathBuf,
+    pub module: SetupModule,
+    /// Replace an existing certificate (the old one is kept as *.pem.old).
+    pub renew: bool,
+}
+
+/// Creates the module's certificate and key (owned by the service user, key 0600) and
+/// prints what to do in Entra, with the config section to add. Returns the thumbprint.
+pub fn module_setup(sys: &dyn System, o: &ModuleSetupOptions) -> Result<String, String> {
+    if !sys.is_root() {
+        return Err("run module-setup as root (sudo)".into());
+    }
+    let (uid, gid) = sys.user_ids(SERVICE_USER).ok_or_else(|| {
+        format!("user {SERVICE_USER} does not exist: run `sudo afas-entra-sync install` first")
+    })?;
+    let dir = p(&o.root, CFG_DIR);
+    if !dir.is_dir() {
+        return Err(format!(
+            "{CFG_DIR} does not exist: run `sudo afas-entra-sync install` first"
+        ));
+    }
+    let m = o.module.key();
+    let cert_abs = format!("{CFG_DIR}/{m}-cert.pem");
+    let key_abs = format!("{CFG_DIR}/{m}-key.pem");
+    let (cert_path, key_path) = (p(&o.root, &cert_abs), p(&o.root, &key_abs));
+    let created = if cert_path.exists() && key_path.exists() && !o.renew {
+        set_mode(&key_path, 0o600)?;
+        sys.chown(&key_path, uid, gid)?;
+        sys.say(&format!(
+            "kept    {cert_abs} and {m}-key.pem (use --renew for a new one)"
+        ));
+        false
+    } else {
+        for f in [&key_path, &cert_path] {
+            if f.exists() {
+                std::fs::rename(f, f.with_extension("pem.old"))
+                    .map_err(|e| format!("keep old {}: {e}", f.display()))?;
+            }
+        }
+        let (cert_pem, key_pem) = new_certificate_named(&format!("afas-entra-sync-{m}"))?;
+        write_private(sys, &key_path, key_pem.as_bytes(), 0o600, uid, gid)?;
+        write_private(sys, &cert_path, cert_pem.as_bytes(), 0o644, uid, gid)?;
+        sys.say(&format!(
+            "created {cert_abs} and {m}-key.pem (RSA 3072, valid 365 days)"
+        ));
+        true
+    };
+    let tp = thumbprint(&std::fs::read(&cert_path).map_err(|e| e.to_string())?)?;
+
+    let perms = o.module.permissions().join(", ");
+    sys.say("");
+    sys.say(&format!("Next steps for {}:", o.module.title()));
+    if created && o.renew {
+        sys.say(&format!(
+            "  1. Upload the new {cert_abs} to the module's existing app registration\n     (Certificates & secrets). Thumbprint: {tp}\n     Delete the old certificate there once a run has worked."
+        ));
+        return Ok(tp);
+    }
+    sys.say(&format!(
+        "  1. Entra admin center: App registrations > New registration\n     Name: afas-entra-sync-{m}; single tenant; no redirect URI."
+    ));
+    sys.say(&format!(
+        "  2. Certificates & secrets > Certificates > Upload: {cert_abs}\n     Thumbprint shown by Entra: {tp}. Do not create a client secret."
+    ));
+    sys.say(&format!(
+        "  3. API permissions > Add > Microsoft Graph > Application permissions:\n     {perms}\n     then Grant admin consent."
+    ));
+    let mut n = 4;
+    if o.module == SetupModule::Joiner {
+        sys.say("  4. Mail.Send: do NOT grant it in Entra. Grant it with Exchange RBAC for Applications,\n     scoped to the sender mailbox (PowerShell in docs/MODULES.md). Turn on the\n     Temporary Access Pass method under Authentication methods > Policies.");
+        n += 1;
+    }
+    sys.say(&format!(
+        "  {n}. Add this to {CFG_DIR}/config.toml (client_id = the Application (client) ID):\n"
+    ));
+    let extra = match o.module {
+        SetupModule::Roles => {
+            "group_prefix = \"AFAS-\"\n\n[[roles.rule]]\ngroup_id = \"<object id of a cloud security group>\"\nall = true\n"
+        }
+        SetupModule::Joiner => {
+            "sender = \"<mailbox that sends the code>\"\ndeliver_to = \"manager\"\nfixed_address = \"<service desk address>\"\n"
+        }
+        SetupModule::Leaver => {
+            "# auto_reply = \"{display_name} no longer works here. Please contact {manager_name} ({manager_email}).\"\n"
+        }
+    };
+    sys.say(&format!(
+        "[{m}]\nenabled = true\nclient_id = \"<application id>\"\ncertificate_pem = \"{cert_abs}\"\nprivate_key_pem = \"{key_abs}\"\n{extra}"
+    ));
+    sys.say(&format!(
+        "  {}. Check it: sudo -u {SERVICE_USER} afas-entra-sync doctor\n     then a test run: sudo -u {SERVICE_USER} afas-entra-sync sync",
+        n + 1
+    ));
+    Ok(tp)
+}
+
 /// Self-signed RSA 3072 / SHA-256 certificate for Entra, valid 365 days.
 pub fn new_certificate() -> Result<(String, String), String> {
+    new_certificate_named("afas-entra-sync")
+}
+
+/// Self-signed RSA 3072 / SHA-256 certificate with this common name, valid 365 days.
+pub fn new_certificate_named(common_name: &str) -> Result<(String, String), String> {
     use chrono::Datelike;
     let key = rcgen::KeyPair::generate_rsa_for(&rcgen::PKCS_RSA_SHA256, rcgen::RsaKeySize::_3072)
         .map_err(|e| format!("key generation failed: {e}"))?;
     let mut params = rcgen::CertificateParams::default();
     params
         .distinguished_name
-        .push(rcgen::DnType::CommonName, "afas-entra-sync");
+        .push(rcgen::DnType::CommonName, common_name);
     let today = chrono::Utc::now().date_naive();
     let end = today + chrono::Days::new(365);
     params.not_before = rcgen::date_time_ymd(today.year(), today.month() as u8, today.day() as u8);

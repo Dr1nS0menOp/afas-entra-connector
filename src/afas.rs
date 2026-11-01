@@ -114,6 +114,28 @@ pub fn fetch_rows(
     }
 }
 
+/// The first `take` rows only (one request), for checks that need to see the fields.
+pub fn fetch_sample(
+    cfg: &AfasConfig,
+    auth: &str,
+    client: &Client,
+    sleep: &dyn Fn(Duration),
+    take: usize,
+) -> Result<Vec<Map<String, Value>>> {
+    let base = format!(
+        "{}/connectors/{}",
+        cfg.base_url.trim_end_matches('/'),
+        cfg.connector
+    );
+    let mut url = reqwest::Url::parse(&base)
+        .map_err(|e| AppError::Config(format!("invalid AFAS URL: {e}")))?;
+    url.query_pairs_mut()
+        .append_pair("skip", "0")
+        .append_pair("take", &take.to_string())
+        .append_pair("orderbyfieldids", &cfg.order_by_field);
+    fetch_page(&url, auth, client, cfg, sleep)
+}
+
 fn fetch_page(
     url: &reqwest::Url,
     auth: &str,

@@ -22,9 +22,10 @@ use std::path::PathBuf;
     about = "AFAS Profit → Entra ID / AD via API-driven inbound provisioning"
 )]
 struct Cli {
-    /// Path to the TOML configuration file.
-    #[arg(short, long, default_value = "afas-entra-sync.toml")]
-    config: PathBuf,
+    /// Configuration file. Default: $AFAS_ENTRA_SYNC_CONFIG, else
+    /// /etc/afas-entra-sync/config.toml if it exists, else ./afas-entra-sync.toml.
+    #[arg(short, long)]
+    config: Option<PathBuf>,
     #[command(subcommand)]
     cmd: Cmd,
 }
@@ -47,6 +48,10 @@ enum Cmd {
         /// Write the SCIM payloads to this file (contains personal data!).
         #[arg(long)]
         dump_payload: Option<PathBuf>,
+        /// Print the full report as JSON (the default when the output is not a terminal,
+        /// e.g. in Ansible, Semaphore or systemd).
+        #[arg(long)]
+        json: bool,
     },
     /// Turn the GUI back on after it was turned off from the GUI. Only works if
     /// `[gui] enabled = true` is set in the config file.
@@ -116,6 +121,19 @@ enum Cmd {
         #[arg(long, hide = true, default_value = "/")]
         root: PathBuf,
     },
+    /// Set up the app registration for a module (roles, joiner or leaver): creates its
+    /// certificate and key with the right owner and permissions, and prints the steps in
+    /// Entra and the config section to add. Run as root.
+    ModuleSetup {
+        /// roles, joiner (new hires) or leaver (departing employees).
+        #[arg(value_parser = ["roles", "joiner", "leaver"])]
+        module: String,
+        /// Create a new certificate (the old one is kept as *.pem.old).
+        #[arg(long)]
+        renew: bool,
+        #[arg(long, hide = true, default_value = "/")]
+        root: PathBuf,
+    },
     /// Remove the binary and systemd units. With --purge also config, token, key, state and the user.
     Uninstall {
         #[arg(long)]
@@ -142,6 +160,21 @@ enum Cmd {
         /// CSV instead of JSON.
         #[arg(long)]
         csv: bool,
+    },
+    /// Check everything (config, secrets, AFAS, Entra, permissions, certificates, TLS,
+    /// schedule) and say how to fix what is wrong. Read-only. Exit 0 all good, 3 warnings,
+    /// 61 something to fix.
+    Doctor {
+        /// JSON instead of readable text.
+        #[arg(long)]
+        json: bool,
+    },
+    /// List the fields the AFAS GetConnector returns, the kind of data in each and which
+    /// setting they are mapped to. Shows no personal data, so safe to share.
+    AfasFields {
+        /// JSON instead of a table.
+        #[arg(long)]
+        json: bool,
     },
     /// Manual, time-limited exceptions to the role rules.
     #[command(subcommand)]
@@ -186,15 +219,51 @@ fn main() {
 
 fn real_main() -> i32 {
     let cli = Cli::parse();
-    match cli.cmd {
-        Cmd::GuiEnable => return gui_enable(&cli.config),
-        Cmd::Install { .. } | Cmd::Uninstall { .. } => return install_cmd(cli.cmd),
-        _ => {}
+    let config_path = afas_entra_sync::ux::resolve_config(
+        cli.config.clone(),
+        std::env::var_os(afas_entra_sync::ux::CONFIG_ENV),
+        &|p| p.exists(),
+    );
+    if matches!(
+        cli.cmd,
+        Cmd::Install { .. } | Cmd::Uninstall { .. } | Cmd::ModuleSetup { .. }
+    ) {
+        return install_cmd(cli.cmd);
     }
-    let cfg = match Config::load(&cli.config) {
+    let cfg = match Config::load(&config_path) {
         Ok(c) => c,
-        Err(e) => return fail(&e),
+        Err(e) => {
+            if cli.config.is_none() && !config_path.exists() {
+                return fail(&AppError::Config(format!(
+                    "no configuration found at {}. Give one with -c <file>, set {}, or install with: sudo afas-entra-sync install",
+                    config_path.display(),
+                    afas_entra_sync::ux::CONFIG_ENV
+                )));
+            }
+            return fail(&e);
+        }
     };
+    // Commands that write to the state directory: never as root when it belongs to the
+    // service user (root-owned files would break the service).
+    let writes = matches!(
+        cli.cmd,
+        Cmd::Sync { .. }
+            | Cmd::Serve { .. }
+            | Cmd::GuiEnable
+            | Cmd::Exception(ExceptionCmd::Add { .. } | ExceptionCmd::Remove { .. })
+    );
+    if writes {
+        // Only echoed back in the suggested `sudo -u` command; never used for a decision.
+        // nosemgrep (args): message text only
+        let args: Vec<String> = std::env::args().collect();
+        if let Err(m) = afas_entra_sync::ux::check_running_user(&cfg, &args) {
+            eprintln!("{m}");
+            return exit::CONFIG;
+        }
+    }
+    if let Cmd::GuiEnable = cli.cmd {
+        return gui_enable(&config_path);
+    }
     let sleep = |d: std::time::Duration| std::thread::sleep(d);
     match cli.cmd {
         Cmd::CheckConfig => {
@@ -206,7 +275,16 @@ fn real_main() -> i32 {
             as_of,
             allow_mass_disable,
             dump_payload,
+            json,
         } => {
+            let human = !json && std::io::IsTerminal::is_terminal(&std::io::stdout());
+            let show = |r: &afas_entra_sync::sync::Report| {
+                if human {
+                    print!("{}", afas_entra_sync::ux::sync_summary(r));
+                } else {
+                    print_json(r);
+                }
+            };
             let opts = RunOptions {
                 apply,
                 as_of,
@@ -221,12 +299,12 @@ fn real_main() -> i32 {
             };
             match run(&cfg, &opts, &sleep) {
                 Ok(r) => {
-                    print_json(&r.report);
+                    show(&r.report);
                     r.report.exit_code
                 }
                 Err((e, report)) => {
                     if let Some(r) = report {
-                        print_json(&r);
+                        show(&r);
                     }
                     fail(&e)
                 }
@@ -238,7 +316,7 @@ fn real_main() -> i32 {
             trusted_proxy,
         } => {
             let opts = afas_entra_sync::web::WebOptions {
-                config_path: cli.config.clone(),
+                config_path: config_path.clone(),
                 listen,
                 read_only,
                 trusted_proxy,
@@ -248,8 +326,45 @@ fn real_main() -> i32 {
                 Err(e) => fail(&AppError::Config(e)),
             }
         }
-        Cmd::GuiEnable | Cmd::Install { .. } | Cmd::Uninstall { .. } => exit::INTERNAL,
+        Cmd::GuiEnable | Cmd::Install { .. } | Cmd::Uninstall { .. } | Cmd::ModuleSetup { .. } => {
+            exit::INTERNAL
+        }
         Cmd::CheckTls => check_tls(&cfg),
+        Cmd::Doctor { json } => {
+            use afas_entra_sync::doctor;
+            let o = doctor::Options {
+                sleep: &sleep,
+                use_system_proxy: true,
+                now: chrono::Utc::now(),
+                systemctl: &doctor::real_systemctl,
+                tls: true,
+            };
+            let checks = doctor::run(&cfg, &config_path, &o);
+            if json || !std::io::IsTerminal::is_terminal(&std::io::stdout()) {
+                print_json(&checks);
+            } else {
+                print!("{}", doctor::render(&checks));
+            }
+            doctor::exit_code(&checks)
+        }
+        Cmd::AfasFields { json } => {
+            use afas_entra_sync::doctor;
+            match doctor::fields_report(&cfg, &sleep, true) {
+                Ok(f) => {
+                    if json || !std::io::IsTerminal::is_terminal(&std::io::stdout()) {
+                        print_json(&f);
+                    } else {
+                        print!("{}", doctor::render_fields(&f));
+                    }
+                    if f.iter().any(|x| !x.present) {
+                        exit::CONFIG
+                    } else {
+                        exit::OK
+                    }
+                }
+                Err(e) => fail(&AppError::Config(e)),
+            }
+        }
         Cmd::Report {
             employee,
             since,
@@ -490,6 +605,21 @@ fn install_cmd(cmd: Cmd) -> i32 {
         Cmd::Uninstall { purge, yes, root } => {
             uninstall(&RealSystem, &UninstallOptions { root, purge, yes })
         }
+        Cmd::ModuleSetup {
+            module,
+            renew,
+            root,
+        } => afas_entra_sync::install::SetupModule::parse(&module).and_then(|module| {
+            afas_entra_sync::install::module_setup(
+                &RealSystem,
+                &afas_entra_sync::install::ModuleSetupOptions {
+                    root,
+                    module,
+                    renew,
+                },
+            )
+            .map(|_| ())
+        }),
         _ => Ok(()),
     };
     match res {
