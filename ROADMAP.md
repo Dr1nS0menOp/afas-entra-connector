@@ -1,7 +1,7 @@
 # Roadmap afas-entra-sync
 
 Recorded 2026-10-31, starting from version 0.1.0 (PoC): employees from one GetConnector,
-a fixed set of attributes, CLI only. Current version: 0.8.0 (one-step installer without Ansible: `install.sh` / `afas-entra-sync install`, `uninstall`).
+a fixed set of attributes, CLI only. Current version: 0.9.0 (optional modules: roles and licences, joiner Temporary Access Pass, leaver actions, webhook, access log, exceptions).
 
 Order = proposed build order. Every item ships with tests at the same level as 0.1.0
 (unit, e2e against mocks, property tests, mutation tests).
@@ -35,7 +35,7 @@ Still open:
 - Required end date (or maximum duration) for externals.
 - Hard check that no `externalId` appears in two populations.
 
-## 3. Job profiles to groups — OPTION A BUILT in 0.3.0
+## 3. Job profiles to groups — OPTION A BUILT in 0.3.0, OPTION C BUILT in 0.9.0
 
 Built: toggle `job_profile` (→ `jobProfile`). Groups through dynamic membership rules in
 Entra; see README.
@@ -46,7 +46,7 @@ Entra; see README.
 | B | HR links job profiles to AFAS user groups; native AFAS integration | No code; HR manages it | Depends on the AFAS integration; it matches on UPN and runs from the AFAS cloud |
 | C | Tool manages membership of cloud groups through Graph, from a job profile → group mapping | Fully in our hands, same safety model (thresholds, dry-run) | Tool needs `GroupMember.ReadWrite.All`; cloud groups only; more build and test work |
 
-- Current preference: **A**; C only if A falls short.
+- Option C is the `[roles]` module (0.9.0), with the safeguards below, SoD rules and exceptions. A and C can be combined per group.
 - With C: only manage groups with a fixed prefix, never role-assignable, mail-enabled or
   on-prem groups; threshold on membership changes per run.
 
@@ -69,7 +69,7 @@ CSV export of exclusions.
 
 ## 5. Smaller items
 
-- Revoke sessions on disable (optional, needs `User.RevokeSessions.All`).
+- ~~Revoke sessions on disable~~: built in 0.9.0 as the `[leaver]` module.
 - Document display name from AFAS name usage (partner name / birth name) via `display_name`.
 - Optional OU per department/population via a `parentDistinguishedName` expression in the
   provisioning app.
@@ -77,6 +77,29 @@ CSV export of exclusions.
 - Optional native TLS for the GUI itself (now: local only or behind Traefik).
 - Clear secrets from memory after use (zeroize).
 - Extend mutation tests to `config.rs` and `web.rs`.
+
+## 6. Modules — BUILT in 0.9.0
+
+Coverage of what commercial AFAS → Entra/AD connectors usually offer:
+
+| Capability | Status |
+| --- | --- |
+| Accounts create/update/disable from AFAS (AD and cloud) | Core, since 0.1.0 |
+| Prehire accounts, leaver window, populations | Core, since 0.3.0 |
+| Groups and licences from HR data, with SoD and exceptions | `[roles]`, 0.9.0 |
+| First sign-in without a password (Temporary Access Pass to the manager) | `[joiner]`, 0.9.0 |
+| Leaver: revoke sessions, automatic reply | `[leaver]`, 0.9.0 |
+| ITSM tickets / workflows on joiner, mover, leaver | `[webhook]`, 0.9.0 |
+| Access history and export for audits | Access log + `report`, 0.9.0 |
+| Admin GUI, audit log | 0.5.0 |
+| Mailbox to shared mailbox | Through the webhook (no Graph API) |
+
+Still open:
+- Writing values back to AFAS (e.g. the created UPN or email) through an UpdateConnector.
+- Access review page in the GUI (per group: members, since when, through which rule).
+- Teams/SharePoint site membership (beyond groups).
+- Manager notification on movers (now via the webhook).
+- Certificate expiry warning in report and GUI.
 
 ## Questions to settle per deployment
 

@@ -1,7 +1,7 @@
 # Security
 
 Security design, hardening and verification of afas-entra-sync and the Ansible deployment
-in `deploy/ansible`. Last reviewed 2026-11-01 (version 0.7.0).
+in `deploy/ansible`. Last reviewed 2026-11-01 (version 0.9.0).
 
 ## What runs where
 
@@ -29,6 +29,12 @@ apply to it.
 | GUI misuse over the network | Non-local only behind a trusted proxy (Traefik) with the Authentik user header; everything audited |
 | GUI weakens security settings | TLS policy, addresses, secrets, state and the GUI switch are locked; the GUI can turn itself off but never on |
 | Compromised dependency | `Cargo.lock` pinned, `cargo audit` clean (0 advisories in 303 crates on 2026-11-01), `#![forbid(unsafe_code)]` |
+| A module changes far too much (wrong rule, broken HR filter) | Every module plans first and changes nothing above its own maximum per run (exit 21); dry-run without `--apply` |
+| One compromised module credential gives everything | Separate app registration and certificate per module; the provisioning app gets no Graph write permissions |
+| Roles module touches privileged or foreign groups | Only groups with the configured prefix; role-assignable, on-prem synced and dynamic groups are refused before anything changes; unknown members left alone by default |
+| Temporary Access Pass leaks | Never logged or stored; valid only from the start date for a limited time; deleted again when the mail fails; `Mail.Send` scoped to one sender mailbox with Exchange RBAC for Applications |
+| Forged or replayed webhook calls to your ITSM | HMAC-SHA256 over timestamp and body, secret at least 16 characters from an environment variable or a 0600 file, unique delivery id; receivers check the signature and age |
+| Spreadsheet formula injection through the access log export | CSV cells starting with `=`, `+`, `-`, `@` are prefixed |
 | Tampered binary during deployment | `install.sh` and Ansible verify the SHA-256 checksum before installing |
 | Installer leaves a half-configured host | Every answer is validated and the config is built and checked before anything is written; files are written atomically with final permissions |
 
@@ -115,6 +121,24 @@ engines fail on the larger ML-KEM handshake; `check-tls` will show that as a han
   `ProvisioningLog.Read.All`. No directory-wide write permissions.
 - Renew in time; Entra refuses an expired certificate (exit 40).
 
+## App registrations for the modules
+
+Each optional module has its own app registration with certificate auth (see
+`docs/MODULES.md`). Grant only:
+
+| Module | Application permissions |
+| --- | --- |
+| roles | `GroupMember.ReadWrite.All`, `User.Read.All` |
+| joiner | `UserAuthMethod-TAP.ReadWrite.All`, `User.Read.All`; `Mail.Send` **not** in Entra but through Exchange RBAC for Applications, scoped to the sender mailbox |
+| leaver | `User.RevokeSessions.All`, `User.Read.All`, `MailboxSettings.ReadWrite` (optionally scoped with Exchange RBAC for Applications) |
+| webhook | none |
+
+`GroupMember.ReadWrite.All` can change members of any non-role-assignable group in the
+tenant; the prefix check is enforced by the tool, not by Entra. Protect that certificate
+like a privileged credential, keep sensitive groups role-assignable (or in a restricted
+management administrative unit) so this permission cannot touch them, and monitor the app's
+sign-in and audit logs.
+
 ## AFAS group integration
 
 - It matches users on the UPN, so the UPN from AFAS must be the AD UPN (this tool sends
@@ -130,6 +154,7 @@ engines fail on the larger ML-KEM handshake; `check-tls` will show that as a han
 | `cargo test` | all tests pass, including 11 TLS tests against a real local TLS server and a CONNECT proxy |
 | `cargo clippy -D warnings` | clean |
 | `cargo audit` | 0 vulnerabilities, 0 warnings (303 crates) |
+| Module tests | 14 module tests against a mock Graph (thresholds, SoD, exceptions, TAP cleanup on mail failure, webhook signature with RFC 4231 vectors, outbox order); mutation checks on remove logic and TAP cleanup |
 | `systemd-analyze security` (GUI unit) | 1.5 OK |
 | Live GUI check | no cookie 401, foreign Host 421, login link → HttpOnly SameSite=Strict cookie → 200 |
 

@@ -558,7 +558,16 @@ process; the tool and this Microsoft API never delete.
 
 ## Groups
 
-Groups do not go through the tool but through the Entra ID integration in AFAS Profit. HR
+There are three ways to fill groups from AFAS. Pick one per group:
+
+| Way | Where it is managed | When |
+| --- | --- | --- |
+| The tool's roles module | Rules in the config file (department, job profile, ...), with SoD rules, exceptions and an access log | You want rules, a dry-run, a maximum per run and an audit trail; see [MODULES.md](MODULES.md) |
+| AFAS Profit Entra ID integration | User groups in Profit, by HR | HR wants to manage members by hand in Profit |
+| Dynamic groups in Entra | Membership rules in Entra | Simple rules, no extra app registration |
+
+The rest of this section describes the AFAS integration. Groups do not go through the tool
+there, but through the Entra ID integration in AFAS Profit. HR
 manages user groups and members there; AFAS carries them to Entra groups. Rights and
 licences are assigned to those groups in Entra.
 
@@ -611,6 +620,13 @@ using AD groups, or later write groups back to AD with Cloud Sync. That is a sep
 
 Careful with the AFAS filter: someone who drops out while active is not disabled. They show
 up in `disappeared_while_active` and the run ends with exit 3.
+
+## Joiners, leavers and ITSM (optional modules)
+
+After the provisioning upload the tool can also issue a Temporary Access Pass to new
+employees, sign leavers out everywhere with an automatic reply, and send signed events to an
+ITSM tool (for example to convert a leaver's mailbox to a shared mailbox, which has no Graph
+API). Setup per module, with its own app registration: [MODULES.md](MODULES.md).
 
 ## Admin GUI (optional)
 
