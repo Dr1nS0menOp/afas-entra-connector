@@ -28,6 +28,7 @@ fn app() -> &'static App {
             listen: "127.0.0.1:8080".parse().expect("addr"),
             read_only: false,
             trusted_proxy: None,
+            proxy_secret: None,
         })
         .expect("app");
         a.sleep = Arc::new(|_| {});

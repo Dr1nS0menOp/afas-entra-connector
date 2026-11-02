@@ -45,6 +45,61 @@ fn write_cfg(dir: &std::path::Path, afas: &str, entra: &str) -> std::path::PathB
     p
 }
 
+/// `serve --trusted-proxy` refuses to start without a usable proxy secret file. Every case
+/// ends before the server would listen, so the test never blocks.
+#[test]
+fn serve_behind_a_proxy_needs_a_private_secret_file() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let p = write_cfg(dir.path(), "http://127.0.0.1:1", "http://127.0.0.1:1");
+    std::fs::write(
+        &p,
+        std::fs::read_to_string(&p).unwrap() + "\n[gui]\nenabled = true\n",
+    )
+    .unwrap();
+    let serve = |extra: &[&str]| {
+        let mut args = vec![
+            "-c",
+            p.to_str().unwrap(),
+            "serve",
+            "--listen",
+            "127.0.0.1:0",
+            "--trusted-proxy",
+            "127.0.0.1",
+        ];
+        args.extend_from_slice(extra);
+        let out = bin()
+            .args(&args)
+            .env("TEST_AFAS_TOKEN", "x")
+            .output()
+            .unwrap();
+        (
+            out.status.code(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    };
+    let (code, err) = serve(&[]);
+    assert_eq!(code, Some(10), "{err}");
+    assert!(err.contains("--proxy-secret-file"), "{err}");
+
+    let secret = dir.path().join("gui-proxy-secret");
+    std::fs::write(&secret, "0123456789abcdef0123456789abcdef\n").unwrap(); // pragma: allowlist secret (test value)
+    std::fs::set_permissions(&secret, std::fs::Permissions::from_mode(0o644)).unwrap();
+    let (code, err) = serve(&["--proxy-secret-file", secret.to_str().unwrap()]);
+    assert_eq!(code, Some(10), "{err}");
+    assert!(err.contains("accessible by group or others"), "{err}");
+
+    std::fs::set_permissions(&secret, std::fs::Permissions::from_mode(0o600)).unwrap();
+    std::fs::write(&secret, "too-short\n").unwrap();
+    let (code, err) = serve(&["--proxy-secret-file", secret.to_str().unwrap()]);
+    assert_eq!(code, Some(10), "{err}");
+    assert!(err.contains("at least 32"), "{err}");
+
+    let missing = dir.path().join("missing");
+    let (code, _) = serve(&["--proxy-secret-file", missing.to_str().unwrap()]);
+    assert_eq!(code, Some(10));
+}
+
 #[test]
 fn check_config_ok_and_bad() {
     let dir = tempfile::tempdir().unwrap();

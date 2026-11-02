@@ -3,7 +3,7 @@
 //! TLS policy tests against a real local TLS server (rustls), including a CONNECT proxy.
 
 use afas_entra_sync::config::{PostQuantum, TlsConfig, TlsVersion};
-use afas_entra_sync::tls::{client_config_with, probe, provider};
+use afas_entra_sync::tls::{client_config_with, probe, probe_via, provider, proxy_from};
 use rustls::crypto::aws_lc_rs::kx_group;
 use rustls::crypto::{SupportedKxGroup, aws_lc_rs};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
@@ -163,6 +163,12 @@ fn wrong_host_name_is_refused() {
 
 /// Minimal CONNECT proxy for one connection.
 fn proxy(answer_ok: bool) -> u16 {
+    proxy_with(answer_ok, None)
+}
+
+/// Like [`proxy`], and with `Some(value)` only a CONNECT with exactly that
+/// `Proxy-Authorization` gets through (others get 407).
+fn proxy_with(answer_ok: bool, auth: Option<String>) -> u16 {
     let l = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = l.local_addr().unwrap().port();
     std::thread::spawn(move || {
@@ -170,16 +176,25 @@ fn proxy(answer_ok: bool) -> u16 {
         let mut r = BufReader::new(c.try_clone().unwrap());
         let mut first = String::new();
         r.read_line(&mut first).unwrap();
+        let mut got_auth = None;
         loop {
             let mut l = String::new();
             r.read_line(&mut l).unwrap();
             if l == "\r\n" {
                 break;
             }
+            if let Some(v) = l.strip_prefix("Proxy-Authorization: ") {
+                got_auth = Some(v.trim().to_string());
+            }
         }
         let mut c = c;
         if !answer_ok {
             c.write_all(b"HTTP/1.1 403 Forbidden\r\n\r\n").unwrap();
+            return;
+        }
+        if auth.is_some() && got_auth != auth {
+            c.write_all(b"HTTP/1.1 407 Proxy Authentication Required\r\n\r\n")
+                .unwrap();
             return;
         }
         let target = first.split_whitespace().nth(1).unwrap().to_string();
@@ -232,6 +247,82 @@ fn probe_through_connect_proxy() {
     );
     assert!(!p.ok);
     assert!(p.error.unwrap().contains("403"));
+}
+
+#[test]
+fn probe_reports_the_certificate_issuer() {
+    let s = server(vec![kx_group::X25519], &V13);
+    let p = run(&s, TlsConfig::default());
+    assert!(p.ok, "{p:?}");
+    // rcgen's default subject (self-signed: issuer = subject).
+    assert_eq!(p.issuer.as_deref(), Some("rcgen self signed cert"), "{p:?}");
+}
+
+#[test]
+fn probe_through_a_proxy_that_needs_authentication() {
+    let px_url = |port: u16, cred: &str| format!("http://{cred}127.0.0.1:{port}");
+    // "lab:s3cr%40t" decodes to lab:s3cr@t.
+    let want = "Basic bGFiOnMzY3JAdA==".to_string();
+    let tunnel = |url: &str| {
+        let s = server(vec![kx_group::X25519], &V13);
+        let t = proxy_from(Some(url), "", "localhost").unwrap();
+        probe_via(
+            "test",
+            "localhost",
+            s.port,
+            Some(&t),
+            client(TlsConfig::default(), &s.root),
+            Duration::from_secs(5),
+        )
+    };
+    let p = tunnel(&px_url(
+        proxy_with(true, Some(want.clone())),
+        "lab:s3cr%40t@",
+    ));
+    assert!(p.ok, "credentials from the proxy URL are sent: {p:?}");
+    assert!(
+        !p.via_proxy.as_deref().unwrap_or("").contains("s3cr"),
+        "never show the password: {p:?}"
+    );
+    let p = tunnel(&px_url(proxy_with(true, Some(want.clone())), ""));
+    let e = p.error.unwrap();
+    assert!(
+        e.contains("407") && e.contains("requires authentication"),
+        "{e}"
+    );
+    let p = tunnel(&px_url(proxy_with(true, Some(want)), "lab:wrong@"));
+    let e = p.error.unwrap();
+    assert!(
+        e.contains("407") && e.contains("refused the credentials"),
+        "{e}"
+    );
+}
+
+#[test]
+fn proxy_choice_follows_no_proxy() {
+    let p = |no: &str, host: &str| proxy_from(Some("http://px:3128"), no, host).map(|t| t.addr);
+    assert_eq!(p("", "graph.microsoft.com").as_deref(), Some("px:3128"));
+    assert_eq!(p("graph.microsoft.com", "graph.microsoft.com"), None);
+    assert_eq!(p(".microsoft.com", "graph.microsoft.com"), None);
+    assert_eq!(p("*.microsoft.com", "graph.microsoft.com"), None);
+    assert_eq!(p("microsoft.com", "GRAPH.Microsoft.COM"), None);
+    assert_eq!(p("*", "graph.microsoft.com"), None);
+    assert_eq!(
+        p("soft.com, afas.online", "graph.microsoft.com").as_deref(),
+        Some("px:3128"),
+        "only whole labels match"
+    );
+    assert_eq!(p(" , ", "x.y").as_deref(), Some("px:3128"));
+    // Default port, no credentials, https:// proxies are not supported, empty = none.
+    let t = proxy_from(Some("http://px"), "", "x.y").unwrap();
+    assert_eq!((t.addr.as_str(), t.authorization), ("px:80", None));
+    assert_eq!(proxy_from(Some("https://px:3128"), "", "x.y"), None);
+    assert_eq!(proxy_from(Some(""), "", "x.y"), None);
+    assert_eq!(proxy_from(None, "", "x.y"), None);
+    assert_eq!(proxy_from(Some("not a url"), "", "x.y"), None);
+    // The password stays out of debug output.
+    let t = proxy_from(Some("http://u:topsecret@px:1"), "", "x.y").unwrap();
+    assert!(!format!("{t:?}").contains("topsecret"));
 }
 
 /// The real HTTP client (reqwest) must use the same policy: a TLS 1.2-only server fails on

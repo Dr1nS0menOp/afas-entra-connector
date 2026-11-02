@@ -1,10 +1,42 @@
 - name: Install afas-entra-sync
-  hosts: "{{ sync_host }}"
+  hosts: "{{ sync_host | default('afas_sync') }}"
   become: true
   vars:
     cfg_dir: /etc/afas-entra-sync
     state_dir: /var/lib/afas-entra-sync
   tasks:
+    - name: Program matches the published SHA-256 (checked on the controller, before copying)
+      ansible.builtin.stat:
+        path: "{{ playbook_dir }}/files/afas-entra-sync-linux-x86_64"
+        checksum_algorithm: sha256
+      delegate_to: localhost
+      become: false
+      run_once: true
+      register: program
+
+    - name: Stop if the program is missing or its checksum differs
+      vars:
+        published: "{{ lookup('ansible.builtin.file', 'afas-entra-sync-linux-x86_64.sha256').split()[0] }}"
+      ansible.builtin.assert:
+        that:
+          - program.stat.exists
+          - program.stat.checksum == published
+        fail_msg: "files/afas-entra-sync-linux-x86_64 is missing or does not match files/afas-entra-sync-linux-x86_64.sha256"
+      run_once: true
+
+    - name: Proxy mode needs a proxy secret
+      ansible.builtin.assert:
+        that: gui_proxy_secret is defined and gui_proxy_secret | length >= 32
+        fail_msg: >-
+          gui_trusted_proxy is set: also set gui_proxy_secret (at least 32 characters,
+          e.g. openssl rand -hex 32) and let Traefik send it as X-Afas-Proxy-Secret
+      when: gui_trusted_proxy is defined
+
+    - name: ACL tools (Ansible needs setfacl to run tasks as afas-sync, see run-afas-entra-sync.yml)
+      ansible.builtin.package:
+        name: acl
+        state: present
+
     - name: System user
       ansible.builtin.user:
         name: afas-sync
@@ -21,14 +53,14 @@
         mode: "0700"
       loop: ["{{ cfg_dir }}", "{{ state_dir }}"]
 
-    - name: Program (checksum verified against files/afas-entra-sync-linux-x86_64.sha256)
+    # No `checksum:` here: that option takes a SHA-1, the release publishes SHA-256 (checked above).
+    - name: Program
       ansible.builtin.copy:
         src: afas-entra-sync-linux-x86_64
         dest: /usr/local/bin/afas-entra-sync
         owner: root
         group: root
         mode: "0755"
-        checksum: "{{ lookup('ansible.builtin.file', 'afas-entra-sync-linux-x86_64.sha256').split()[0] }}"
 
     - name: AFAS token (secret variable afas_token)
       ansible.builtin.copy:
@@ -65,6 +97,16 @@
         group: afas-sync
         mode: "0600"
       when: key.stat.exists
+
+    - name: Proxy secret for the GUI behind Traefik (secret variable gui_proxy_secret)
+      ansible.builtin.copy:
+        content: "{{ gui_proxy_secret }}"
+        dest: "{{ cfg_dir }}/gui-proxy-secret"
+        owner: afas-sync
+        group: afas-sync
+        mode: "0600"
+      no_log: true
+      when: (gui_enabled | default(false) | bool) and gui_trusted_proxy is defined
 
     - name: Admin GUI service (hardened, only when gui_enabled)
       ansible.builtin.template:

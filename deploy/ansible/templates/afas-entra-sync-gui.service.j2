@@ -9,7 +9,7 @@ Wants=network-online.target
 Type=simple
 User=afas-sync
 Group=afas-sync
-ExecStart=/usr/local/bin/afas-entra-sync -c /etc/afas-entra-sync/config.toml serve --listen {{ gui_listen | default('127.0.0.1:8080') }}{% if gui_trusted_proxy is defined %} --trusted-proxy {{ gui_trusted_proxy }}{% endif %}
+ExecStart=/usr/local/bin/afas-entra-sync -c /etc/afas-entra-sync/config.toml serve --listen {{ gui_listen | default('127.0.0.1:8080') }}{% if gui_trusted_proxy is defined %} --trusted-proxy {{ gui_trusted_proxy }} --proxy-secret-file /etc/afas-entra-sync/gui-proxy-secret{% endif %}
 
 Restart=on-failure
 RestartSec=10

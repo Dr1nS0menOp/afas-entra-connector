@@ -1,0 +1,7 @@
+# Pinned so that a release can be rebuilt bit for bit (see docs/security/REPRODUCIBLE.md).
+# The minimum supported version is still rust-version in Cargo.toml.
+[toolchain]
+channel = "1.97.0"
+profile = "minimal"
+components = ["rustfmt", "clippy"]
+targets = ["x86_64-unknown-linux-musl"]

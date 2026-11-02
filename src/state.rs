@@ -58,10 +58,14 @@ impl StateStore {
 
     pub fn lock(&self) -> Result<RunLock> {
         let path = self.dir.join(LOCK_FILE);
-        let file = OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .write(true)
+        let mut opts = OpenOptions::new();
+        opts.create(true).truncate(false).write(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o600);
+        }
+        let file = opts
             .open(&path)
             .map_err(|e| AppError::Config(format!("cannot open lock file: {e}")))?;
         match file.try_lock() {

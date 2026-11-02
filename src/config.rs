@@ -578,13 +578,7 @@ impl Config {
         if !self.afas.base_url.starts_with("https://") && !is_local_test_url(&self.afas.base_url) {
             return err("afas.base_url must start with https://");
         }
-        if self.afas.connector.is_empty()
-            || !self
-                .afas
-                .connector
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
-        {
+        if !is_connector_name(&self.afas.connector) {
             return err("afas.connector may only contain letters, digits, '_' and '-'");
         }
         match (&self.afas.token_env, &self.afas.token_file) {
@@ -597,8 +591,10 @@ impl Config {
         if !(1..=10_000).contains(&self.afas.page_size) {
             return err("afas.page_size must be between 1 and 10000");
         }
-        if self.afas.order_by_field.trim().is_empty() || self.afas.order_by_field.contains(',') {
-            return err("afas.order_by_field must be one (unique) field, e.g. the employee number");
+        if !is_field_name(&self.afas.order_by_field) {
+            return err(
+                "afas.order_by_field must be one (unique) field name, e.g. the employee number (letters, digits and '_')",
+            );
         }
         if self.afas.max_attempts == 0 || self.afas.timeout_secs == 0 {
             return err("afas.max_attempts and afas.timeout_secs must be > 0");
@@ -608,6 +604,11 @@ impl Config {
         for f in &fields {
             if f.trim().is_empty() {
                 return err("afas.fields contains an empty field name");
+            }
+            if !is_field_name(f) {
+                return Err(AppError::Config(format!(
+                    "afas.fields: '{f}' is not a field name (letters, digits and '_', at most {MAX_FIELD_NAME} characters)"
+                )));
             }
             if !seen.insert(*f) {
                 return Err(AppError::Config(format!(
@@ -626,13 +627,7 @@ impl Config {
         if !is_guid(&self.entra.service_principal_id) {
             return err("entra.service_principal_id is not a GUID");
         }
-        if self.entra.job_id.trim().is_empty()
-            || !self
-                .entra
-                .job_id
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
-        {
+        if !is_job_id(&self.entra.job_id) {
             return err("entra.job_id is empty or contains invalid characters");
         }
         match self.entra.auth {
@@ -709,12 +704,10 @@ impl Config {
             return err("policy.allowed_upn_domains cannot be empty");
         }
         for d in &self.policy.allowed_upn_domains {
-            if d.is_empty()
-                || d.contains('@')
-                || !d.contains('.')
-                || d.chars().any(char::is_whitespace)
-            {
-                return Err(AppError::Config(format!("invalid UPN domain: '{d}'")));
+            if !is_upn_domain(d) {
+                return Err(AppError::Config(format!(
+                    "invalid UPN domain: '{d}' (a domain name like example.com)"
+                )));
             }
         }
         if self.policy.prehire_days > 365 || self.policy.leaver_lookback_days > 365 {
@@ -786,6 +779,48 @@ impl Config {
 /// Tests only: http://127.0.0.1 and http://localhost are allowed.
 fn is_local_test_url(u: &str) -> bool {
     u.starts_with("http://127.0.0.1:") || u.starts_with("http://localhost:")
+}
+
+/// A domain name for UPNs: labels of letters, digits and '-' (not at the start or end
+/// of a label), at least two labels, at most 253 characters. The installer, the config
+/// file and the GUI all use this one check.
+pub fn is_upn_domain(d: &str) -> bool {
+    let labels: Vec<&str> = d.split('.').collect();
+    d.len() <= 253
+        && labels.len() >= 2
+        && labels.iter().all(|l| {
+            !l.is_empty()
+                && l.len() <= 63
+                && !l.starts_with('-')
+                && !l.ends_with('-')
+                && l.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+        })
+}
+
+/// GetConnector name: letters, digits, '_' and '-'.
+pub fn is_connector_name(c: &str) -> bool {
+    !c.is_empty()
+        && c.len() <= 256
+        && c.chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
+/// Provisioning job ID (`API2AD.<hex>.<guid>`): letters, digits, '.', '-' and '_'.
+pub fn is_job_id(j: &str) -> bool {
+    !j.is_empty()
+        && j.len() <= 256
+        && j.chars()
+            .all(|c| c.is_ascii_alphanumeric() || ".-_".contains(c))
+}
+
+pub const MAX_FIELD_NAME: usize = 100;
+
+/// An AFAS GetConnector field name: letters, digits and '_'. Field names go to AFAS in
+/// the query string (`orderbyfieldids`) and are JSON keys of the response.
+pub fn is_field_name(f: &str) -> bool {
+    !f.is_empty()
+        && f.chars().count() <= MAX_FIELD_NAME
+        && f.chars().all(|c| c.is_alphanumeric() || c == '_')
 }
 
 pub fn is_guid(s: &str) -> bool {

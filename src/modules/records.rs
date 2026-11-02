@@ -37,7 +37,9 @@ pub fn append_access(dir: &Path, e: &AccessEntry) -> Result<(), String> {
     let mut f = opts
         .open(dir.join(ACCESS_LOG))
         .map_err(|e| format!("access log: {e}"))?;
-    writeln!(f, "{line}").map_err(|e| format!("access log: {e}"))
+    // One write per line: a crash cannot interleave or split it.
+    f.write_all(format!("{line}\n").as_bytes())
+        .map_err(|e| format!("access log: {e}"))
 }
 
 /// Entries, oldest first, optionally for one employee and from a date (UTC).

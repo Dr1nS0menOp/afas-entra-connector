@@ -112,6 +112,13 @@ engines fail on the larger ML-KEM handshake; `check-tls` will show that as a han
   process runs; every restart creates a new one.
 - Behind Traefik (`--trusted-proxy`), run Traefik on the same host or on a dedicated
   network segment: the hop between Traefik and the GUI is plain HTTP.
+- Proxy mode also requires `--proxy-secret-file`: Traefik adds the secret as
+  `X-Afas-Proxy-Secret` to every request and the GUI compares it in constant time. The
+  source address alone is not enough: with Traefik on the same host, every local user and
+  process can connect from 127.0.0.1 and could otherwise send its own
+  `X-authentik-username` (found in testing of 0.10.0; fixed in 0.11.0).
+- Authentik decides who gets in: every user who passes the forward-auth policy is a full
+  GUI administrator. Bind the application to a dedicated group.
 - Keep the GUI off when you do not need it (`gui_enabled: false`).
 
 ## Certificate for Entra

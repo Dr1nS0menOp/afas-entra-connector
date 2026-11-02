@@ -1,5 +1,5 @@
 - name: Check AFAS provisioning logs
-  hosts: "{{ sync_host }}"
+  hosts: "{{ sync_host | default('afas_sync') }}"
   become: true
   become_user: afas-sync
   tasks:

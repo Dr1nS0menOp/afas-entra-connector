@@ -3,7 +3,11 @@
 # Field names are the AFAS GetConnector field names.
 
 [afas]
+{% if afas_env | string is match('https://') %}
+base_url = "{{ afas_env }}"
+{% else %}
 base_url = "https://{{ afas_env }}.rest.afas.online/ProfitRestServices"
+{% endif %}
 connector = "{{ afas_connector }}"     # GetConnector, one row per employee
 token_file = "/etc/afas-entra-sync/afas.token"
 page_size = 1000                         # rows per page (1..10000)

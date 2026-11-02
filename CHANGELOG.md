@@ -3,6 +3,52 @@
 All notable changes. Versions follow [Semantic Versioning](https://semver.org/); before
 1.0 a minor version may change configuration.
 
+## 0.11.0 – unreleased
+
+Fixes from testing 0.10.0 on Debian 12, Ubuntu 24.04 and Rocky 9 with proxies, fault
+injection, ZAP, fuzzing and mutation testing.
+
+**Action needed for the GUI behind Traefik:** `serve --trusted-proxy` now also requires
+`--proxy-secret-file`, and Traefik must send that secret as `X-Afas-Proxy-Secret`. See
+docs/GUIDE.md, "Behind Traefik and Authentik". Ansible: set `gui_proxy_secret`.
+
+- **Security (high):** in proxy mode the GUI trusted `X-authentik-username` from any
+  connection from the proxy address. With Traefik on the same host (`--trusted-proxy
+  127.0.0.1`), every local user could become GUI administrator and start a sync. The
+  shared proxy secret closes this. Form tokens are now compared in constant time.
+- **Ansible:** the install playbook always failed (`copy` takes a SHA-1 as `checksum`, the
+  release publishes SHA-256). The program is now checked against the SHA-256 on the
+  controller before it is copied. It installs `acl`, so the run playbook works on Ubuntu
+  (`become_user` needs `setfacl`). `sync_host` defaults to the group `afas_sync`, so
+  `ansible-lint` passes without extra variables. `afas_env` may be a full `https://` URL.
+- **Red Hat, Rocky, Alma:** the printed next steps and hints use
+  `/usr/local/bin/afas-entra-sync`: `sudo` there does not search `/usr/local/bin`.
+- **`check-tls` and `doctor` through a proxy:** a user name and password in the
+  `HTTPS_PROXY` URL are sent, so a proxy with authentication no longer
+  gives exit 60 while the sync works. `ALL_PROXY` and `NO_PROXY = *` are honoured as by
+  the HTTP client. Both now show the certificate issuer per endpoint, which reveals a
+  TLS-inspecting proxy whose CA is trusted.
+- **One validation:** the installer, the config file and the GUI use the same rules for
+  UPN domains, connector names and job IDs. The GUI accepted values like `..` or
+  `example.com/x?y` as UPN domain. Field names (`[afas.fields]`, `order_by_field`) may only
+  contain letters, digits and `_`; they go to AFAS in the query string.
+  **Check your config with `check-config` before upgrading.**
+- **Error messages:** network errors keep their cause (DNS, connection refused, TLS)
+  instead of only "error sending request". An upload that gives up names the last error.
+  "calls 1..0 were accepted" now reads "no call was accepted".
+- **Files:** `audit.log`, the access log and the lock file are created 0600 regardless of
+  the umask. Each audit line is written in one write and synced, so a crash leaves no
+  partial line.
+- **GUI:** header `Cross-Origin-Embedder-Policy: require-corp`.
+- **Reproducible builds:** toolchain pinned in `rust-toolchain.toml`; the release maps
+  build paths away. See docs/security/REPRODUCIBLE.md.
+- **Docs:** outgoing proxy (systemd drop-in), a reference Traefik configuration with HSTS
+  on the redirect and without CBC ciphers, and a warning that `post_quantum = "require"`
+  refuses the current Entra and Graph endpoints.
+- **Tests:** new tests for the gaps that mutation testing found: `ct_eq`, session
+  lifetimes, proxy secret, proxy choice and authentication, certificate issuer, every
+  validation limit of config, installer and modules, and GUI input.
+
 ## 0.10.0 – 2026-11-01
 
 Easier to set up, run and keep running. No configuration changes.

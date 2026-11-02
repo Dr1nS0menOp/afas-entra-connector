@@ -85,7 +85,8 @@ dir = "/var/lib/afas-entra-sync"
 # TLS for AFAS, Entra login and Graph. Check what is negotiated with: check-tls
 [tls]
 min_version = "1.3"          # "1.3" (default) or "1.2"
-post_quantum = "prefer"      # "prefer" (default) or "require" (refuses servers without ML-KEM)
+post_quantum = "prefer"      # "prefer" (default) or "require" (refuses servers without ML-KEM;
+                             # Entra and Graph had no ML-KEM in Nov 2026, so not for production yet)
 
 # Admin GUI. Off by default; can only be turned on here.
 [gui]

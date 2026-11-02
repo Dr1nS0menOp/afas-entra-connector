@@ -120,7 +120,10 @@ impl<'a> Graph<'a> {
             let wait = match req.send() {
                 Err(e) => {
                     if attempt >= MAX_ATTEMPTS || !repeatable {
-                        return Err(net(format!("network error: {e}")));
+                        return Err(net(format!(
+                            "network error: {}",
+                            crate::http::error_chain(&e)
+                        )));
                     }
                     backoff(attempt, 1000, 30_000)
                 }

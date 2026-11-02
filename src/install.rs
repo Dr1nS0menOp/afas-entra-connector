@@ -371,10 +371,14 @@ fn summary(sys: &dyn System, out: &Outcome, o: &InstallOptions) {
     sys.say(&format!(
         "  1. Upload {CFG_DIR}/cert.pem to the app registration in Entra (Certificates & secrets).\n     Thumbprint shown by Entra: {tp}"
     ));
-    sys.say("  2. Check everything:            sudo -u afas-sync afas-entra-sync doctor");
-    sys.say("  3. Dry-run (sends nothing):     sudo -u afas-sync afas-entra-sync sync");
+    sys.say(
+        "  2. Check everything:            sudo -u afas-sync /usr/local/bin/afas-entra-sync doctor",
+    );
+    sys.say(
+        "  3. Dry-run (sends nothing):     sudo -u afas-sync /usr/local/bin/afas-entra-sync sync",
+    );
     if !o.enable_sync {
-        sys.say("  4. Go live (hourly sync):       sudo afas-entra-sync install --enable-sync");
+        sys.say("  4. Go live (hourly sync):       sudo /usr/local/bin/afas-entra-sync install --enable-sync");
     }
 }
 
@@ -441,7 +445,7 @@ fn ask(
     Err(format!("no valid answer for: {question}"))
 }
 
-fn check_env(v: &str) -> Result<(), String> {
+pub fn check_env(v: &str) -> Result<(), String> {
     if (1..=10).contains(&v.len()) && v.chars().all(|c| c.is_ascii_digit()) {
         return Ok(());
     }
@@ -451,11 +455,8 @@ fn check_env(v: &str) -> Result<(), String> {
     Err("enter the environment number (e.g. 12345) or the full https:// REST address".into())
 }
 
-fn check_connector(v: &str) -> Result<(), String> {
-    if !v.is_empty()
-        && v.chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
-    {
+pub fn check_connector(v: &str) -> Result<(), String> {
+    if crate::config::is_connector_name(v) {
         Ok(())
     } else {
         Err("letters, digits, '_' and '-' only".into())
@@ -470,12 +471,8 @@ fn check_guid(v: &str) -> Result<(), String> {
     }
 }
 
-fn check_job(v: &str) -> Result<(), String> {
-    if !v.is_empty()
-        && v.len() <= 256
-        && v.chars()
-            .all(|c| c.is_ascii_alphanumeric() || ".-_".contains(c))
-    {
+pub fn check_job(v: &str) -> Result<(), String> {
+    if crate::config::is_job_id(v) {
         Ok(())
     } else {
         Err("copy the job ID from the endpoint URL (e.g. API2AD.xxxx.yyyy)".into())
@@ -489,24 +486,16 @@ fn split_domains(v: &str) -> Vec<String> {
         .collect()
 }
 
-fn check_domains(v: &str) -> Result<(), String> {
+pub fn check_domains(v: &str) -> Result<(), String> {
     let ds = split_domains(v);
-    let ok = !ds.is_empty()
-        && ds.iter().all(|d| {
-            d.contains('.')
-                && !d.starts_with('.')
-                && !d.ends_with('.')
-                && d.chars()
-                    .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
-        });
-    if ok {
+    if !ds.is_empty() && ds.iter().all(|d| crate::config::is_upn_domain(d)) {
         Ok(())
     } else {
         Err("one or more domains, comma-separated (e.g. example.com)".into())
     }
 }
 
-fn check_count(v: &str) -> Result<(), String> {
+pub fn check_count(v: &str) -> Result<(), String> {
     match v.parse::<u32>() {
         Ok(n) if (1..=10_000_000).contains(&n) => Ok(()),
         _ => Err("a whole number above 0".into()),
@@ -693,12 +682,12 @@ pub fn module_setup(sys: &dyn System, o: &ModuleSetupOptions) -> Result<String, 
         return Err("run module-setup as root (sudo)".into());
     }
     let (uid, gid) = sys.user_ids(SERVICE_USER).ok_or_else(|| {
-        format!("user {SERVICE_USER} does not exist: run `sudo afas-entra-sync install` first")
+        format!("user {SERVICE_USER} does not exist: run `sudo /usr/local/bin/afas-entra-sync install` first")
     })?;
     let dir = p(&o.root, CFG_DIR);
     if !dir.is_dir() {
         return Err(format!(
-            "{CFG_DIR} does not exist: run `sudo afas-entra-sync install` first"
+            "{CFG_DIR} does not exist: run `sudo /usr/local/bin/afas-entra-sync install` first"
         ));
     }
     let m = o.module.key();

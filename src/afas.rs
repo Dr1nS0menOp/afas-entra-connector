@@ -206,11 +206,7 @@ pub fn parse_rows(body: &str) -> Result<Vec<Map<String, Value>>> {
         .collect()
 }
 
-/// reqwest errors contain the URL; not secret here, but long.
+/// reqwest errors contain the URL; not secret here, but long. Keeps the causes.
 fn without_url(e: &reqwest::Error) -> String {
-    let mut s = e.to_string();
-    if let Some(u) = e.url() {
-        s = s.replace(u.as_str(), "<url>");
-    }
-    s
+    crate::http::error_chain(e)
 }

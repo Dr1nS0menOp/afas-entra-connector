@@ -24,6 +24,26 @@ pub fn build_client(
         .map_err(|e| format!("cannot create HTTP client: {e}"))
 }
 
+/// A reqwest error with its causes ("error sending request" alone does not say whether
+/// DNS, the connection, the proxy or TLS failed). The URL, long and already known from
+/// the context, is replaced by `<url>`.
+pub fn error_chain(e: &reqwest::Error) -> String {
+    let mut s = e.to_string();
+    if let Some(u) = e.url() {
+        s = s.replace(u.as_str(), "<url>");
+    }
+    let mut cur = std::error::Error::source(e);
+    while let Some(c) = cur {
+        let m = c.to_string();
+        if !m.is_empty() && !s.contains(&m) {
+            s.push_str(": ");
+            s.push_str(&m);
+        }
+        cur = c.source();
+    }
+    s
+}
+
 /// Reads a response body, refusing anything larger than `max` bytes, so a broken or
 /// hostile endpoint cannot exhaust memory.
 pub fn read_capped<R: std::io::Read>(r: R, max: u64) -> Result<String, String> {

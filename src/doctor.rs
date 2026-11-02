@@ -267,7 +267,7 @@ fn running_user(cfg: &Config, out: &mut Out) {
             Level::Fail,
             format!("{} does not exist", dir.display()),
             Some(
-                "sudo afas-entra-sync install (or create it, owned by the service user, mode 0700)"
+                "sudo /usr/local/bin/afas-entra-sync install (or create it, owned by the service user, mode 0700)"
                     .into(),
             ),
         );
@@ -306,7 +306,7 @@ fn afas(cfg: &Config, o: &Options<'_>, out: &mut Out) {
         Err(e) => {
             let msg = e.to_string();
             let fix = if msg.contains("401") || msg.contains("403") {
-                "the token is not accepted: create a new one for the app connector (docs/GUIDE.md step 1b) and store it with: sudo afas-entra-sync install --replace-token"
+                "the token is not accepted: create a new one for the app connector (docs/GUIDE.md step 1b) and store it with: sudo /usr/local/bin/afas-entra-sync install --replace-token"
             } else if msg.contains("404") {
                 "the GetConnector name is wrong, or it is not in the app connector: check afas.connector"
             } else {
@@ -894,17 +894,20 @@ fn tls(cfg: &Config, out: &mut Out) {
         let (Some(host), Some(port)) = (u.host_str(), u.port_or_known_default()) else {
             continue;
         };
-        let p = crate::tls::probe(
+        let p = crate::tls::probe_via(
             name,
             host,
             port,
-            crate::tls::proxy_for(host).as_deref(),
+            crate::tls::proxy_for(host).as_ref(),
             tls_cfg.clone(),
             Duration::from_secs(20),
         );
         if p.ok {
             let kx = p.key_exchange.clone().unwrap_or_default();
-            let detail = format!("{} with {kx}", p.protocol.clone().unwrap_or_default());
+            let mut detail = format!("{} with {kx}", p.protocol.clone().unwrap_or_default());
+            if let Some(i) = &p.issuer {
+                let _ = write!(detail, ", certificate issued by {i}");
+            }
             if p.post_quantum {
                 out.ok(A, name, detail);
             } else {
@@ -944,7 +947,10 @@ fn schedule(cfg: &Config, o: &Options<'_>, out: &mut Out) {
             "Timer",
             Level::Warn,
             format!("hourly sync is not enabled ({s})"),
-            Some("after a good test run: sudo afas-entra-sync install --enable-sync".into()),
+            Some(
+                "after a good test run: sudo /usr/local/bin/afas-entra-sync install --enable-sync"
+                    .into(),
+            ),
         ),
     }
     let path = cfg.state.dir.join(crate::state::REPORT_FILE);

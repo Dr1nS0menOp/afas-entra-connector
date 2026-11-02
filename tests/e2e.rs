@@ -367,7 +367,7 @@ fn bad_request_stops_and_keeps_old_state() {
     let msg = err.to_string();
     assert_eq!(err.exit_code(), exit::UPLOAD);
     assert!(
-        msg.contains("call 2/2") && msg.contains("calls 1..1 were accepted"),
+        msg.contains("call 2/2") && msg.contains("call 1 was accepted"),
         "{msg}"
     );
     assert!(!env.state_exists(), "no new state after a failed upload");
@@ -389,7 +389,20 @@ fn gives_up_after_max_attempts() {
     let err = go(&env.cfg(&Opts::default()), &opts(true), &sleeps).unwrap_err();
     assert_eq!(err.exit_code(), exit::UPLOAD);
     assert_eq!(sleeps.all().len(), 3);
+    let msg = err.to_string();
+    assert!(
+        msg.contains("after 4 attempts (last: HTTP 503") && msg.contains("no call was accepted"),
+        "{msg}"
+    );
     m.assert();
+}
+
+#[test]
+fn accepted_calls_are_counted_in_words() {
+    use afas_entra_sync::entra::accepted_text;
+    assert_eq!(accepted_text(0), "no call was accepted");
+    assert_eq!(accepted_text(1), "call 1 was accepted");
+    assert_eq!(accepted_text(3), "calls 1..3 were accepted");
 }
 
 #[test]
@@ -821,6 +834,10 @@ fn afas_unreachable_is_retried_then_reported() {
     assert!(
         msg.contains("<url>") && !msg.contains(&port.to_string()),
         "URL is shortened: {msg}"
+    );
+    assert!(
+        msg.to_lowercase().contains("refused"),
+        "the cause (connection refused) is kept: {msg}"
     );
     assert_eq!(sleeps.all().len(), 2);
 }

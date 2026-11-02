@@ -204,7 +204,7 @@ impl<'a> TokenProvider<'a> {
                 }
             }
             let reason = match self.client.post(&url).form(&form).send() {
-                Err(e) => format!("network error: {e}"),
+                Err(e) => format!("network error: {}", crate::http::error_chain(&e)),
                 Ok(r) => {
                     let status = r.status();
                     let body = read_capped(r, MAX_SMALL_BODY).unwrap_or_default();
@@ -278,6 +278,7 @@ pub fn upload_all(
         let body = serde_json::to_vec(req).map_err(|e| AppError::Internal(e.to_string()))?;
         let mut attempt = 0u32;
         let mut refreshed = false;
+        let mut last;
         loop {
             attempt += 1;
             let token = tokens.get(false)?;
@@ -289,21 +290,23 @@ pub fn upload_all(
                 .send();
             let fail_ctx = || {
                 format!(
-                    "call {}/{} failed; calls 1..{} were accepted, the rest were not. The next run sends everything again",
+                    "call {}/{} failed; {}, the rest were not. The next run sends everything again",
                     i + 1,
                     requests.len(),
-                    out.calls_accepted
+                    accepted_text(out.calls_accepted)
                 )
             };
             let wait = match resp {
                 Err(e) => {
-                    tracing::warn!(call = i + 1, attempt, error = %e, "network error during upload");
+                    last = format!("network error: {}", crate::http::error_chain(&e));
+                    tracing::warn!(call = i + 1, attempt, error = %last, "network error during upload");
                     backoff(attempt, up.backoff_base_ms, up.backoff_max_ms)
                 }
                 Ok(r) => {
                     let status = r.status();
                     let headers = r.headers().clone();
                     let text = read_capped(r, MAX_SMALL_BODY).unwrap_or_default();
+                    last = format!("HTTP {status}");
                     if status.is_success() {
                         if status != StatusCode::ACCEPTED {
                             tracing::warn!(%status, "bulkUpload returned 2xx but not 202; treated as accepted");
@@ -338,7 +341,7 @@ pub fn upload_all(
             };
             if attempt >= up.max_attempts {
                 return Err(AppError::Upload(format!(
-                    "after {attempt} attempts — {}",
+                    "after {attempt} attempts (last: {last}) — {}",
                     fail_ctx()
                 )));
             }
@@ -352,6 +355,15 @@ pub fn upload_all(
         }
     }
     Ok(out)
+}
+
+/// "no call was accepted", "call 1 was accepted", "calls 1..3 were accepted".
+pub fn accepted_text(n: usize) -> String {
+    match n {
+        0 => "no call was accepted".into(),
+        1 => "call 1 was accepted".into(),
+        n => format!("calls 1..{n} were accepted"),
+    }
 }
 
 #[derive(Debug, Default, Serialize, PartialEq, Eq)]
@@ -403,7 +415,12 @@ pub fn read_logs(
             .get(url.clone())
             .bearer_auth(&token)
             .send()
-            .map_err(|e| AppError::Upload(format!("provisioning logs: network error: {e}")))?;
+            .map_err(|e| {
+                AppError::Upload(format!(
+                    "provisioning logs: network error: {}",
+                    crate::http::error_chain(&e)
+                ))
+            })?;
         let status = r.status();
         let text = read_capped(r, MAX_LOG_BODY)
             .map_err(|e| AppError::Upload(format!("provisioning logs: {e}")))?;

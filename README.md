@@ -185,8 +185,13 @@ enabled = true
 ```
 afas-entra-sync serve                         # http://127.0.0.1:8080, local only
 afas-entra-sync serve --read-only             # view only
-afas-entra-sync serve --listen 0.0.0.0:8080 --trusted-proxy 10.0.0.5   # behind Traefik
+afas-entra-sync serve --listen 0.0.0.0:8080 --trusted-proxy 10.0.0.5 \
+    --proxy-secret-file /etc/afas-entra-sync/gui-proxy-secret          # behind Traefik
 ```
+
+Behind Traefik, Traefik must send the secret from that file on every request as the
+header `X-Afas-Proxy-Secret` (generate it with `openssl rand -hex 32`, owner `afas-sync`,
+mode 0600). A reference Traefik configuration is in [docs/GUIDE.md](docs/GUIDE.md#admin-gui-optional).
 
 ### How changes are stored
 
@@ -212,9 +217,12 @@ another address. Clearing a value from the config file is only possible in that 
   `<state.dir>/gui-login-url` (readable by the service user only, new on every start); it
   sets an HttpOnly, SameSite=Strict session cookie. Requests with another Host header are
   refused (DNS rebinding). Use an SSH tunnel to reach it from your workstation.
-- Another address requires `--trusted-proxy`: then only connections from that IP, and the
+- Another address requires `--trusted-proxy` and `--proxy-secret-file`: then only
+  connections from that IP that carry the shared secret in `X-Afas-Proxy-Secret`, and the
   `X-authentik-username` header is required (Traefik forward auth with Authentik). That
-  name goes into the audit log.
+  name goes into the audit log. The secret matters most when Traefik runs on the same
+  host: without it, any local user could connect from 127.0.0.1 and send their own
+  Authentik header.
 - Every form has a token (CSRF), POST at most 64 KB, all output escaped, no JavaScript, no
   external files, strict Content-Security-Policy.
 - Audit log of every change, run and payload download in `<state.dir>/audit.log`.

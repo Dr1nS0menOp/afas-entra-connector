@@ -6,8 +6,8 @@ mod common;
 
 use afas_entra_sync::config::{Config, check_overrides};
 use afas_entra_sync::web::{
-    App, CONFIRM_APPLY, CONFIRM_MASS, MAX_SESSIONS, Request, Response, SESSION_COOKIE, WebOptions,
-    esc, handle, parse_form, validate_listen,
+    App, CONFIRM_APPLY, CONFIRM_MASS, MAX_SESSIONS, PROXY_SECRET_HEADER, Request, Response,
+    SESSION_COOKIE, WebOptions, ct_eq, esc, handle, parse_form, validate_listen,
 };
 use common::*;
 use std::net::IpAddr;
@@ -61,7 +61,18 @@ fn opts(e: &Env, read_only: bool, proxy: Option<IpAddr>) -> WebOptions {
         },
         read_only,
         trusted_proxy: proxy,
+        proxy_secret: proxy.map(|_| PROXY_SECRET.to_string()),
     }
+}
+
+const PROXY_SECRET: &str = "0123456789abcdef0123456789abcdef"; // pragma: allowlist secret (test value)
+
+/// What Traefik sends: the shared secret and the Authentik user.
+fn via_proxy(user: &str) -> Vec<(String, String)> {
+    vec![
+        (PROXY_SECRET_HEADER.to_string(), PROXY_SECRET.to_string()),
+        ("x-authentik-username".to_string(), user.to_string()),
+    ]
 }
 
 fn app(e: &Env, read_only: bool, proxy: Option<IpAddr>) -> App {
@@ -201,7 +212,7 @@ fn proxy_mode_checks_source_and_user_header() {
     let e = env("http://127.0.0.1:1");
     let proxy: IpAddr = "10.0.0.5".parse().unwrap();
     let a = app(&e, false, Some(proxy));
-    let user = vec![("x-authentik-username".to_string(), "jdoe".to_string())];
+    let user = via_proxy("jdoe");
     let r = |remote: &str, h: &[(String, String)]| {
         handle(
             &a,
@@ -218,6 +229,70 @@ fn proxy_mode_checks_source_and_user_header() {
     assert_eq!(r("10.0.0.9", &user), 403);
     assert_eq!(r("10.0.0.5", &[]), 403);
     assert_eq!(r("10.0.0.5", &user), 200);
+    // Without (or with a wrong) proxy secret the Authentik header is not trusted, even
+    // from the proxy's own address: a local process there could otherwise forge it.
+    let no_secret = vec![("x-authentik-username".to_string(), "akadmin".to_string())];
+    assert_eq!(r("10.0.0.5", &no_secret), 403);
+    let mut wrong = via_proxy("akadmin");
+    wrong[0].1 = "0123456789abcdef0123456789abcdeX".into();
+    assert_eq!(r("10.0.0.5", &wrong), 403);
+    let mut short = via_proxy("akadmin");
+    short[0].1 = "0123".into();
+    assert_eq!(r("10.0.0.5", &short), 403);
+    // The secret alone is not enough either: the user header is still required.
+    assert_eq!(r("10.0.0.5", &via_proxy("")), 403);
+}
+
+#[test]
+fn proxy_mode_requires_a_strong_proxy_secret() {
+    let e = env("http://127.0.0.1:1");
+    let proxy: IpAddr = "10.0.0.5".parse().unwrap();
+    let mut o = opts(&e, false, Some(proxy));
+    assert!(validate_listen(&o).is_ok());
+    o.proxy_secret = None;
+    let err = validate_listen(&o).unwrap_err();
+    assert!(err.contains("--proxy-secret-file"), "{err}");
+    assert!(App::new(opts_without_secret(&e, proxy)).is_err());
+    o.proxy_secret = Some("a".repeat(31));
+    assert!(validate_listen(&o).is_err());
+    o.proxy_secret = Some("a".repeat(32));
+    assert!(validate_listen(&o).is_ok());
+    o.proxy_secret = Some(format!("{} b", "a".repeat(32)));
+    assert!(
+        validate_listen(&o).is_err(),
+        "no spaces or control characters"
+    );
+    // Local mode needs no secret.
+    let mut l = opts(&e, false, None);
+    l.proxy_secret = None;
+    assert!(validate_listen(&l).is_ok());
+}
+
+fn opts_without_secret(e: &Env, proxy: IpAddr) -> WebOptions {
+    let mut o = opts(e, false, Some(proxy));
+    o.proxy_secret = None;
+    o
+}
+
+#[test]
+fn ct_eq_compares_every_byte() {
+    assert!(ct_eq("", ""));
+    assert!(ct_eq("abcd", "abcd"));
+    assert!(!ct_eq("abcd", "abc"));
+    assert!(!ct_eq("abcd", "abce"));
+    assert!(!ct_eq("abcd", "xbcd"));
+    // Two differences that cancel out under XOR-accumulation must still differ:
+    // 'a'^'b' == 'c'^'`' (both 0x03).
+    assert!(!ct_eq("ac", "b`"));
+    assert!(!ct_eq("aaaa", "abba"));
+}
+
+#[test]
+fn session_and_login_link_lifetimes() {
+    use afas_entra_sync::web::{IDLE_TIMEOUT, LOGIN_TTL, MAX_LIFETIME};
+    assert_eq!(IDLE_TIMEOUT.as_secs(), 30 * 60);
+    assert_eq!(MAX_LIFETIME.as_secs(), 8 * 60 * 60);
+    assert_eq!(LOGIN_TTL.as_secs(), 15 * 60);
 }
 
 #[test]
@@ -367,6 +442,77 @@ fn settings_roundtrip_is_validated_audited_and_reversible() {
             .unwrap()
             .contains("prehire_days = 14")
     );
+}
+
+#[test]
+fn gui_applies_the_same_domain_and_field_name_rules_as_the_installer() {
+    let e = env("http://127.0.0.1:1");
+    let a = app(&e, false, None);
+    let safety = |domains: &str| {
+        format!(
+            "{}&policy.timezone=Europe%2FAmsterdam&policy.allowed_upn_domains={domains}&policy.prehire_days=30&policy.leaver_lookback_days=30&policy.min_records=5&policy.max_drop_percent=10&policy.max_disables_per_run=10&policy.max_invalid_percent=10&policy.max_calls_per_run=100",
+            csrf(&a)
+        )
+    };
+    // Payloads ZAP stored with 0.10.0.
+    for bad in [
+        "%28DBMS_SESSION.SLEEP%2815%29%29",
+        "example.com%2Fx%3Fy",
+        "..",
+        "example..com",
+        "-example.com",
+        "example",
+    ] {
+        let r = post(&a, "/settings/safety", &safety(bad));
+        assert_eq!(r.status, 400, "{bad} must be refused: {}", r.text());
+    }
+    assert_eq!(
+        post(
+            &a,
+            "/settings/safety",
+            &safety("contoso.nl%2C+sub.example-2.com")
+        )
+        .status,
+        303
+    );
+    let sort = |f: &str| {
+        post(
+            &a,
+            "/settings/source",
+            &format!(
+                "{}&afas.connector=Entra_Medewerkers&afas.page_size=1000&afas.timeout_secs=120&afas.max_attempts=4&afas.order_by_field={f}",
+                csrf(&a)
+            ),
+        )
+    };
+    assert_eq!(
+        sort("Medewerker").status,
+        303,
+        "{}",
+        sort("Medewerker").text()
+    );
+    for bad in [
+        "Personeelsnummer%3BDROP",
+        "a%20b",
+        "x%27%29--",
+        "%28SELECT+1%29",
+    ] {
+        let r = sort(bad);
+        assert_eq!(r.status, 400, "{bad}: {}", r.text());
+    }
+    let city = |f: &str| {
+        post(
+            &a,
+            "/settings/attributes",
+            &format!(
+                "{}&afas.fields.extra.phone_work.field=TelWerk&afas.fields.extra.office.field=Standplaats&afas.fields.extra.city.enabled=on&afas.fields.extra.city.field={f}",
+                csrf(&a)
+            ),
+        )
+    };
+    assert_eq!(city("PlaatsWerk").status, 303);
+    let r = city("Plaats%27%29+OR+1%3D1");
+    assert_eq!(r.status, 400, "{}", r.text());
 }
 
 #[test]
@@ -1109,7 +1255,7 @@ fn proxy_mode_has_no_local_sign_out() {
             method: "GET",
             path: "/",
             remote: Some(proxy),
-            headers: &[("x-authentik-username".into(), "ward".into())],
+            headers: &via_proxy("ward"),
             body: b"",
         },
     );

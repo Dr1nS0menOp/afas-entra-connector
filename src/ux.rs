@@ -75,9 +75,18 @@ pub fn wrong_user(
         return None;
     }
     let name = owner_name.map_or_else(|| owner.to_string(), str::to_string);
+    // A bare program name: the full path, because sudo on Red Hat-like systems does not
+    // search /usr/local/bin.
     let cmd = args
         .iter()
-        .map(|a| shell_quote(a))
+        .enumerate()
+        .map(|(i, a)| {
+            if i == 0 && !a.contains('/') {
+                crate::install::BIN.to_string()
+            } else {
+                shell_quote(a)
+            }
+        })
         .collect::<Vec<_>>()
         .join(" ");
     Some(format!(
@@ -172,10 +181,10 @@ pub fn certificates(cfg: &Config, now: DateTime<Utc>) -> Vec<CertStatus> {
 /// The command that renews the certificate of this app registration.
 pub fn renew_command(app: &str) -> &'static str {
     match app {
-        "provisioning" => "sudo afas-entra-sync install --renew-cert",
-        "roles" => "sudo afas-entra-sync module-setup roles --renew",
-        "new hires" => "sudo afas-entra-sync module-setup joiner --renew",
-        _ => "sudo afas-entra-sync module-setup leaver --renew",
+        "provisioning" => "sudo /usr/local/bin/afas-entra-sync install --renew-cert",
+        "roles" => "sudo /usr/local/bin/afas-entra-sync module-setup roles --renew",
+        "new hires" => "sudo /usr/local/bin/afas-entra-sync module-setup joiner --renew",
+        _ => "sudo /usr/local/bin/afas-entra-sync module-setup leaver --renew",
     }
 }
 
@@ -379,7 +388,7 @@ mod tests {
         let dir = Path::new("/var/lib/afas-entra-sync");
         let m = wrong_user(Some(0), dir, Some(998), Some("afas-sync"), &args).unwrap();
         assert!(
-            m.contains("sudo -u afas-sync afas-entra-sync sync --apply"),
+            m.contains("sudo -u afas-sync /usr/local/bin/afas-entra-sync sync --apply"),
             "{m}"
         );
         // The service user itself, a root-owned directory, or no directory yet: fine.
@@ -387,9 +396,17 @@ mod tests {
         assert!(wrong_user(Some(0), dir, Some(0), Some("root"), &args).is_none());
         assert!(wrong_user(Some(0), dir, None, None, &args).is_none());
         // Arguments with spaces are quoted so the line can be pasted.
-        let a2 = ["x".to_string(), "--reason".into(), "it's ok".into()];
+        let a2 = ["/opt/x".to_string(), "--reason".into(), "it's ok".into()];
         let m = wrong_user(Some(0), dir, Some(5), None, &a2).unwrap();
-        assert!(m.contains("sudo -u 5 x --reason 'it'\\''s ok'"), "{m}");
+        assert!(m.contains("sudo -u 5 /opt/x --reason 'it'\\''s ok'"), "{m}");
+        // A program started by its bare name gets the full path (sudo on RHEL does not
+        // search /usr/local/bin).
+        let a3 = ["afas-entra-sync".to_string(), "doctor".into()];
+        let m = wrong_user(Some(0), dir, Some(5), None, &a3).unwrap();
+        assert!(
+            m.contains("sudo -u 5 /usr/local/bin/afas-entra-sync doctor"),
+            "{m}"
+        );
     }
 
     fn report(mode: &'static str, exit_code: i32) -> Report {

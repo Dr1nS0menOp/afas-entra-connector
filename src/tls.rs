@@ -78,7 +78,27 @@ pub struct Probe {
     pub cipher_suite: Option<String>,
     pub key_exchange: Option<String>,
     pub post_quantum: bool,
+    /// Issuer of the server certificate. A TLS-inspecting proxy whose CA is trusted
+    /// shows up here with its own name instead of the public CA of the endpoint.
+    pub issuer: Option<String>,
     pub error: Option<String>,
+}
+
+/// An HTTP CONNECT proxy: `host:port`, and the `Proxy-Authorization` value when the
+/// proxy URL has a user name. Debug output never shows the credentials.
+#[derive(Clone, PartialEq, Eq)]
+pub struct ProxyTarget {
+    pub addr: String,
+    pub authorization: Option<String>,
+}
+
+impl std::fmt::Debug for ProxyTarget {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProxyTarget")
+            .field("addr", &self.addr)
+            .field("authorization", &self.authorization.as_ref().map(|_| "***"))
+            .finish()
+    }
 }
 
 /// Does a full TLS handshake with `host:port` (directly or through an HTTP CONNECT
@@ -91,20 +111,41 @@ pub fn probe(
     cfg: Arc<ClientConfig>,
     timeout: Duration,
 ) -> Probe {
+    let px = proxy.map(|a| ProxyTarget {
+        addr: a.to_string(),
+        authorization: None,
+    });
+    probe_via(endpoint, host, port, px.as_ref(), cfg, timeout)
+}
+
+/// [`probe`] through a proxy that may need authentication.
+pub fn probe_via(
+    endpoint: &str,
+    host: &str,
+    port: u16,
+    proxy: Option<&ProxyTarget>,
+    cfg: Arc<ClientConfig>,
+    timeout: Duration,
+) -> Probe {
     let mut p = Probe {
         endpoint: endpoint.into(),
         host: host.into(),
         port,
-        via_proxy: proxy.map(str::to_string),
+        via_proxy: proxy.map(|x| x.addr.clone()),
         ok: false,
         protocol: None,
         cipher_suite: None,
         key_exchange: None,
         post_quantum: false,
+        issuer: None,
         error: None,
     };
     match handshake(host, port, proxy, cfg, timeout) {
         Ok(conn) => {
+            p.issuer = conn
+                .peer_certificates()
+                .and_then(|c| c.first())
+                .and_then(|c| issuer_name(c.as_ref()));
             p.ok = true;
             p.protocol = conn.protocol_version().map(|v| format!("{v:?}"));
             p.cipher_suite = conn
@@ -121,6 +162,18 @@ pub fn probe(
         Err(e) => p.error = Some(e),
     }
     p
+}
+
+/// Issuer of a DER certificate: its common name, else the whole distinguished name.
+fn issuer_name(der: &[u8]) -> Option<String> {
+    let (_, cert) = x509_parser::parse_x509_certificate(der).ok()?;
+    let issuer = cert.issuer();
+    let cn = issuer
+        .iter_common_name()
+        .next()
+        .and_then(|a| a.as_str().ok())
+        .map(str::to_string);
+    cn.or_else(|| Some(issuer.to_string()))
 }
 
 fn connect(addr: &str, timeout: Duration) -> Result<TcpStream, String> {
@@ -145,25 +198,43 @@ fn connect(addr: &str, timeout: Duration) -> Result<TcpStream, String> {
 fn handshake(
     host: &str,
     port: u16,
-    proxy: Option<&str>,
+    proxy: Option<&ProxyTarget>,
     cfg: Arc<ClientConfig>,
     timeout: Duration,
 ) -> Result<ClientConnection, String> {
     let mut sock = match proxy {
         None => connect(&format!("{host}:{port}"), timeout)?,
         Some(px) => {
-            let mut s = connect(px, timeout)?;
+            let mut s = connect(&px.addr, timeout)?;
+            let auth = px
+                .authorization
+                .as_deref()
+                .map(|a| format!("Proxy-Authorization: {a}\r\n"))
+                .unwrap_or_default();
             write!(
                 s,
-                "CONNECT {host}:{port} HTTP/1.1\r\nHost: {host}:{port}\r\n\r\n"
+                "CONNECT {host}:{port} HTTP/1.1\r\nHost: {host}:{port}\r\n{auth}\r\n"
             )
             .map_err(|e| format!("proxy: {e}"))?;
             let mut r = BufReader::new(s.try_clone().map_err(|e| e.to_string())?);
             let mut status = String::new();
             r.read_line(&mut status)
                 .map_err(|e| format!("proxy: {e}"))?;
-            if status.split_whitespace().nth(1) != Some("200") {
-                return Err(format!("proxy refused CONNECT: {}", status.trim()));
+            match status.split_whitespace().nth(1) {
+                Some("200") => {}
+                Some("407") if px.authorization.is_some() => {
+                    return Err(format!(
+                        "proxy refused the credentials from HTTPS_PROXY: {}",
+                        status.trim()
+                    ));
+                }
+                Some("407") => {
+                    return Err(format!(
+                        "proxy requires authentication (put user:password in HTTPS_PROXY): {}",
+                        status.trim()
+                    ));
+                }
+                _ => return Err(format!("proxy refused CONNECT: {}", status.trim())),
             }
             loop {
                 let mut line = String::new();
@@ -206,11 +277,11 @@ pub fn check_endpoints(cfg: &crate::config::Config) -> Result<Vec<Probe>, String
             return Err(format!("{name}: {url} is not https"));
         }
         let proxy = proxy_for(host);
-        probes.push(probe(
+        probes.push(probe_via(
             name,
             host,
             port,
-            proxy.as_deref(),
+            proxy.as_ref(),
             tls_cfg.clone(),
             Duration::from_secs(20),
         ));
@@ -218,23 +289,71 @@ pub fn check_endpoints(cfg: &crate::config::Config) -> Result<Vec<Probe>, String
     Ok(probes)
 }
 
-/// Proxy from `HTTPS_PROXY`/`https_proxy` (http:// only), unless `NO_PROXY` matches.
-pub fn proxy_for(host: &str) -> Option<String> {
-    let raw = std::env::var("HTTPS_PROXY")
-        .or_else(|_| std::env::var("https_proxy"))
-        .ok()?;
-    let no = std::env::var("NO_PROXY")
-        .or_else(|_| std::env::var("no_proxy"))
-        .unwrap_or_default();
-    for n in no.split(',').map(str::trim).filter(|n| !n.is_empty()) {
+/// Proxy from the environment, the way the HTTP client picks it: `HTTPS_PROXY`,
+/// `https_proxy`, then `ALL_PROXY`/`all_proxy`; `NO_PROXY`/`no_proxy` excludes hosts.
+pub fn proxy_for(host: &str) -> Option<ProxyTarget> {
+    let var = |names: &[&str]| names.iter().find_map(|n| std::env::var(n).ok());
+    proxy_from(
+        var(&["HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy"]).as_deref(),
+        &var(&["NO_PROXY", "no_proxy"]).unwrap_or_default(),
+        host,
+    )
+}
+
+/// The proxy for `host` given the proxy URL and the `NO_PROXY` list. Only `http://`
+/// proxies; `user:password@` in the URL becomes Basic `Proxy-Authorization`.
+pub fn proxy_from(proxy_url: Option<&str>, no_proxy: &str, host: &str) -> Option<ProxyTarget> {
+    let raw = proxy_url.map(str::trim).filter(|s| !s.is_empty())?;
+    for n in no_proxy.split(',').map(str::trim).filter(|n| !n.is_empty()) {
+        if n == "*" {
+            return None;
+        }
         let n = n.trim_start_matches('*').trim_start_matches('.');
-        if host == n || host.ends_with(&format!(".{n}")) {
+        if host.eq_ignore_ascii_case(n)
+            || host
+                .to_ascii_lowercase()
+                .ends_with(&format!(".{}", n.to_ascii_lowercase()))
+        {
             return None;
         }
     }
-    let u = reqwest::Url::parse(&raw).ok()?;
+    let u = reqwest::Url::parse(raw).ok()?;
     if u.scheme() != "http" {
         return None;
     }
-    Some(format!("{}:{}", u.host_str()?, u.port_or_known_default()?))
+    let authorization = (!u.username().is_empty()).then(|| {
+        use base64::Engine as _;
+        let user = percent_decode(u.username());
+        let pass = percent_decode(u.password().unwrap_or(""));
+        format!(
+            "Basic {}",
+            base64::engine::general_purpose::STANDARD.encode(format!("{user}:{pass}"))
+        )
+    });
+    Some(ProxyTarget {
+        addr: format!("{}:{}", u.host_str()?, u.port_or_known_default()?),
+        authorization,
+    })
+}
+
+/// `%XX` in the user name or password of a URL back to the characters.
+fn percent_decode(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        let hex = |c: u8| (c as char).to_digit(16);
+        if b[i] == b'%'
+            && i + 2 < b.len()
+            && let (Some(h), Some(l)) = (hex(b[i + 1]), hex(b[i + 2]))
+            && let Ok(v) = u8::try_from(h * 16 + l)
+        {
+            out.push(v);
+            i += 3;
+        } else {
+            out.push(b[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }

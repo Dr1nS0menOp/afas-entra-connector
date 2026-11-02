@@ -20,10 +20,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Rust toolchain
+      - name: Rust toolchain (pinned in rust-toolchain.toml)
         run: |
-          rustup toolchain install stable --profile minimal --component rustfmt,clippy
-          rustup default stable
+          rustup toolchain install 1.97.0 --profile minimal --component rustfmt,clippy
+          rustup show active-toolchain
       - name: Format
         run: cargo fmt --all --check
       - name: Clippy (warnings are errors)

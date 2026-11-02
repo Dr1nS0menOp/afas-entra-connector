@@ -33,6 +33,12 @@ pub const PAYLOAD_FILE: &str = "payload.json";
 const MAX_BODY: usize = 64 * 1024;
 /// Header sent by Authentik (forward auth via Traefik).
 const USER_HEADER: &str = "x-authentik-username";
+/// Proxy mode: the shared secret the reverse proxy adds to every request. Without it
+/// the source address alone would decide, and any local process (or anything else that
+/// can connect from the proxy's address) could send its own Authentik header.
+pub const PROXY_SECRET_HEADER: &str = "x-afas-proxy-secret";
+/// Minimum length of the proxy secret.
+pub const MIN_PROXY_SECRET: usize = 32;
 pub const CONFIRM_APPLY: &str = "APPLY";
 pub const CONFIRM_MASS: &str = "ALLOW DISABLE";
 
@@ -43,6 +49,9 @@ pub struct WebOptions {
     /// Only accept connections from this address (the reverse proxy). Required for a
     /// non-loopback `listen`; the Authentik header is then required too.
     pub trusted_proxy: Option<IpAddr>,
+    /// Required with `trusted_proxy`: the value of [`PROXY_SECRET_HEADER`] that the
+    /// proxy sends on every request.
+    pub proxy_secret: Option<String>,
 }
 
 pub struct Request<'a> {
@@ -405,6 +414,26 @@ pub fn validate_listen(o: &WebOptions) -> Result<(), String> {
             "listening on a non-loopback address requires --trusted-proxy (the Traefik address)"
                 .into(),
         );
+    }
+    if o.trusted_proxy.is_some() {
+        match &o.proxy_secret {
+            None => {
+                return Err(format!(
+                    "--trusted-proxy requires --proxy-secret-file: a file with a random secret \
+                     (at least {MIN_PROXY_SECRET} characters) that the proxy sends in the \
+                     header {PROXY_SECRET_HEADER}; generate one with: openssl rand -hex 32"
+                ));
+            }
+            Some(s) if s.chars().count() < MIN_PROXY_SECRET => {
+                return Err(format!(
+                    "the proxy secret must be at least {MIN_PROXY_SECRET} characters"
+                ));
+            }
+            Some(s) if s.chars().any(|c| !c.is_ascii_graphic()) => {
+                return Err("the proxy secret may only contain visible ASCII characters".into());
+            }
+            Some(_) => {}
+        }
     }
     Ok(())
 }
@@ -1072,6 +1101,12 @@ pub fn handle(app: &App, r: &Request<'_>) -> Response {
         if r.remote != Some(proxy) {
             return text(403, "Connection not via the trusted proxy.");
         }
+        let secret = app.opts.proxy_secret.as_deref().unwrap_or_default();
+        if secret.is_empty()
+            || !header(r, PROXY_SECRET_HEADER).is_some_and(|s| ct_eq(s.trim(), secret))
+        {
+            return text(403, "Connection not via the trusted proxy.");
+        }
         if header(r, USER_HEADER).is_none_or(|u| u.trim().is_empty()) {
             return text(403, "No user received from Authentik.");
         }
@@ -1107,7 +1142,7 @@ pub fn handle(app: &App, r: &Request<'_>) -> Response {
     if r.method == "POST" {
         if path == "/logout" {
             let form = parse_form(r.body);
-            if form_get(&form, "csrf") != Some(app.csrf.as_str()) {
+            if !csrf_ok(app, &form) {
                 audit(&layers.config.state.dir, &user, "form token refused", path);
                 return text(403, "Form expired. Reload the page and try again.");
             }
@@ -1136,7 +1171,7 @@ pub fn handle(app: &App, r: &Request<'_>) -> Response {
             return text(413, "Request too large.");
         }
         let form = parse_form(r.body);
-        if form_get(&form, "csrf") != Some(app.csrf.as_str()) {
+        if !csrf_ok(app, &form) {
             audit(&layers.config.state.dir, &user, "form token refused", path);
             return text(403, "Form expired. Reload the page and try again.");
         }
@@ -1183,6 +1218,10 @@ pub fn handle(app: &App, r: &Request<'_>) -> Response {
             None => text(404, "Not found."),
         },
     }
+}
+
+fn csrf_ok(app: &App, form: &[(String, String)]) -> bool {
+    form_get(form, "csrf").is_some_and(|t| ct_eq(t, &app.csrf))
 }
 
 /// Puts a flash message right below the page title.
@@ -1753,13 +1792,14 @@ fn post_check_tls(app: &App, user: &str) -> Response {
                     if p.ok {
                         let _ = write!(
                             msg,
-                            "\n{} ({}): {}, {}, {}{}",
+                            "\n{} ({}): {}, {}, {}{}, issued by {}",
                             p.endpoint,
                             p.host,
                             p.protocol.as_deref().unwrap_or("?"),
                             p.cipher_suite.as_deref().unwrap_or("?"),
                             p.key_exchange.as_deref().unwrap_or("?"),
-                            if p.post_quantum { ", post-quantum" } else { "" }
+                            if p.post_quantum { ", post-quantum" } else { "" },
+                            p.issuer.as_deref().unwrap_or("?")
                         );
                     } else {
                         let _ = write!(
@@ -1773,7 +1813,7 @@ fn post_check_tls(app: &App, user: &str) -> Response {
                 }
                 if probes.iter().any(|p| p.via_proxy.is_some()) {
                     msg.push_str(
-                        "\nThrough a proxy: a TLS-inspecting proxy shows its own TLS settings.",
+                        "\nThrough a proxy: a TLS-inspecting proxy shows its own TLS settings and its own certificate issuer.",
                     );
                 }
                 let code = if probes.iter().all(|p| p.ok) {
@@ -1815,15 +1855,24 @@ fn post_payload_delete(l: &Layers, user: &str) -> Response {
 }
 
 /// One JSON line per action. Write errors do not crash the GUI, but are logged.
+/// The file is created 0600 whatever the umask, each line goes out in one append-mode
+/// write and is synced, so a crash or power loss cannot leave a half line behind.
 pub fn audit(dir: &Path, user: &str, action: &str, detail: &str) {
     use std::io::Write;
     let line =
         serde_json::json!({ "utc": now(), "user": user, "action": action, "detail": detail });
-    let res = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(dir.join(AUDIT_FILE))
-        .and_then(|mut f| writeln!(f, "{line}"));
+    let line = format!("{line}\n");
+    let mut opts = std::fs::OpenOptions::new();
+    opts.create(true).append(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let res = opts.open(dir.join(AUDIT_FILE)).and_then(|mut f| {
+        f.write_all(line.as_bytes())?;
+        f.sync_data()
+    });
     if let Err(e) = res {
         tracing::error!("writing audit log failed: {e}");
     }
@@ -3078,6 +3127,7 @@ pub fn serve(app: App) -> Result<(), String> {
             ("Cache-Control", "no-store".into()),
             ("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'".into()),
             ("Cross-Origin-Opener-Policy", "same-origin".into()),
+            ("Cross-Origin-Embedder-Policy", "require-corp".into()),
             ("Cross-Origin-Resource-Policy", "same-origin".into()),
             ("Permissions-Policy", "camera=(), microphone=(), geolocation=(), interest-cohort=()".into()),
             // Browsers ignore this over plain HTTP; behind the HTTPS proxy it pins HTTPS.

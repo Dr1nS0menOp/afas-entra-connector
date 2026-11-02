@@ -83,6 +83,11 @@ enum Cmd {
         /// the Authentik header X-authentik-username is then required too.
         #[arg(long)]
         trusted_proxy: Option<std::net::IpAddr>,
+        /// Required with --trusted-proxy: file with a random secret (at least 32
+        /// characters, e.g. `openssl rand -hex 32`) that the proxy sends in the header
+        /// X-Afas-Proxy-Secret on every request. Readable by the service user only.
+        #[arg(long)]
+        proxy_secret_file: Option<PathBuf>,
     },
     /// Handshake with AFAS, Entra login and Graph using the `[tls]` policy and report the
     /// negotiated TLS version, cipher suite and key exchange; exit 60 if one fails.
@@ -235,7 +240,7 @@ fn real_main() -> i32 {
         Err(e) => {
             if cli.config.is_none() && !config_path.exists() {
                 return fail(&AppError::Config(format!(
-                    "no configuration found at {}. Give one with -c <file>, set {}, or install with: sudo afas-entra-sync install",
+                    "no configuration found at {}. Give one with -c <file>, set {}, or install with: sudo /usr/local/bin/afas-entra-sync install",
                     config_path.display(),
                     afas_entra_sync::ux::CONFIG_ENV
                 )));
@@ -314,12 +319,33 @@ fn real_main() -> i32 {
             listen,
             read_only,
             trusted_proxy,
+            proxy_secret_file,
         } => {
+            let proxy_secret = match proxy_secret_file.as_deref() {
+                None => None,
+                Some(p) => {
+                    // Same rule as the AFAS token and the private key: owner only.
+                    if let Err(e) =
+                        afas_entra_sync::state::check_private_file(p, "proxy secret file")
+                    {
+                        return fail(&e);
+                    }
+                    match std::fs::read_to_string(p) {
+                        Ok(s) => Some(s.trim().to_string()),
+                        Err(e) => {
+                            return fail(&AppError::Config(format!(
+                                "cannot read --proxy-secret-file: {e}"
+                            )));
+                        }
+                    }
+                }
+            };
             let opts = afas_entra_sync::web::WebOptions {
                 config_path: config_path.clone(),
                 listen,
                 read_only,
                 trusted_proxy,
+                proxy_secret,
             };
             match afas_entra_sync::web::App::new(opts).and_then(afas_entra_sync::web::serve) {
                 Ok(()) => exit::OK,
@@ -644,7 +670,7 @@ fn check_tls(cfg: &Config) -> i32 {
         "all_ok": all_ok,
         "post_quantum_everywhere": all_pq,
         "note": if probes.iter().any(|p| p.via_proxy.is_some()) {
-            "Connections went through a proxy. A TLS-inspecting proxy shows its own TLS settings, not those of the endpoint."
+            "Connections went through a proxy. A TLS-inspecting proxy shows its own TLS settings and certificate issuer, not those of the endpoint."
         } else { "" },
     });
     print_json(&out);

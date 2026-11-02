@@ -321,6 +321,35 @@ Build it yourself: `cargo build --release --target x86_64-unknown-linux-musl` (R
 
 Start strict with the safety thresholds in `[policy]`; you can always relax them.
 
+Do **not** set `post_quantum = "require"` for production yet: in November 2026 the Entra
+login and Graph endpoints negotiated TLS 1.3 with secp384r1, without ML-KEM, so `require`
+refuses them. `check-tls` shows what each endpoint negotiates.
+
+**Red Hat, Rocky, Alma.** `sudo` there has no `/usr/local/bin` in its `secure_path`, so
+`sudo -u afas-sync afas-entra-sync …` says *command not found*. Use the full path,
+`sudo -u afas-sync /usr/local/bin/afas-entra-sync …`, as the installer prints it.
+
+**Outgoing proxy.** Without direct internet access, give the service a proxy with a systemd
+drop-in (it stays when you run `install` again):
+
+```bash
+sudo systemctl edit afas-entra-sync.service      # and the same for afas-entra-sync-check-logs.service
+```
+
+```ini
+[Service]
+Environment=HTTPS_PROXY=http://proxy.example.com:3128
+# with authentication: put "user:password@" before the host (percent-encode @ and : in them)
+Environment=NO_PROXY=localhost,127.0.0.1
+```
+
+`HTTPS_PROXY`, `https_proxy` and `ALL_PROXY` are used, in that order, and `NO_PROXY` excludes
+hosts. For your own commands use the same variables: `sudo -u afas-sync env
+HTTPS_PROXY=… /usr/local/bin/afas-entra-sync doctor`. A TLS-inspecting proxy breaks the
+certificate check unless its CA is in the system trust store; `check-tls` and `doctor` then
+show the proxy's CA as the certificate issuer. Exclude the AFAS and Microsoft hosts from
+inspection where you can.
+
 **Check:**
 
 ```bash
@@ -664,8 +693,73 @@ employee's mailbox to a shared mailbox, which has no Graph API). Setup per modul
 Off by default. Turn it on with `[gui] enabled = true` (Ansible: `gui_enabled: true`). It
 runs on `127.0.0.1:8080`; reach it through an SSH tunnel and sign in with the link in
 `/var/lib/afas-entra-sync/gui-login-url`. Behind Traefik with Authentik use
-`--trusted-proxy`. Turn it off in the GUI itself or in the config; `gui-enable` on the server
-turns it back on. Details: README and SECURITY.md.
+`--trusted-proxy` with `--proxy-secret-file`. Turn it off in the GUI itself or in the config;
+`gui-enable` on the server turns it back on. Details: README and SECURITY.md.
+
+### Behind Traefik and Authentik
+
+The GUI trusts the Authentik user name only from the proxy address **and** with the shared
+secret in `X-Afas-Proxy-Secret`. Create the secret once:
+
+```bash
+openssl rand -hex 32 | sudo install -o afas-sync -g afas-sync -m 0600 /dev/stdin \
+    /etc/afas-entra-sync/gui-proxy-secret
+```
+
+Start the GUI with (Ansible: `gui_trusted_proxy` and `gui_proxy_secret`):
+
+```
+afas-entra-sync serve --listen 127.0.0.1:8080 --trusted-proxy 127.0.0.1 \
+    --proxy-secret-file /etc/afas-entra-sync/gui-proxy-secret
+```
+
+Reference configuration for Traefik v3 (file provider; the Authentik outpost at
+`authentik:9000`). The secret is in the middleware `afas-secret`; keep this file readable by
+Traefik only.
+
+```yaml
+http:
+  routers:
+    afas-gui:
+      rule: Host(`afas-sync.example.com`)
+      entryPoints: [websecure]
+      middlewares: [authentik, afas-secret, security-headers]
+      service: afas-gui
+      tls: {}
+    afas-gui-http:                    # HTTP only redirects, with HSTS
+      rule: Host(`afas-sync.example.com`)
+      entryPoints: [web]
+      middlewares: [security-headers, to-https]
+      service: afas-gui
+  middlewares:
+    authentik:
+      forwardAuth:
+        address: http://authentik:9000/outpost.goauthentik.io/auth/traefik
+        trustForwardHeader: false     # never take X-authentik-* from the client
+        authResponseHeaders: [X-authentik-username]
+    afas-secret:
+      headers:
+        customRequestHeaders:
+          X-Afas-Proxy-Secret: "<contents of gui-proxy-secret>"
+    security-headers:
+      headers:
+        stsSeconds: 31536000
+        stsIncludeSubdomains: true
+        forceSTSHeader: true          # also on the HTTP redirect
+    to-https:
+      redirectScheme: {scheme: https, permanent: true}
+  services:
+    afas-gui:
+      loadBalancer:
+        servers: [{url: "http://127.0.0.1:8080"}]
+tls:
+  options:
+    default:
+      minVersion: VersionTLS13        # or TLS 1.2 with AEAD suites only (no CBC: LUCKY13)
+```
+
+In Authentik, bind the application to a dedicated group: everyone who gets through is a full
+GUI administrator.
 
 ## Troubleshooting
 
