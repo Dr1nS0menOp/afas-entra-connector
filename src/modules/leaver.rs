@@ -10,7 +10,7 @@
 use super::records::{AccessEntry, append_access, now};
 use super::settings::LeaverConfig;
 use super::{Action, Ctx, Found, ModuleReport, ModuleState, Person, match_users, with_graph};
-use crate::graph::{GResult, Graph, list_users, seg};
+use crate::graph::{GResult, Graph, seg};
 use chrono::NaiveDate;
 use reqwest::Method;
 use serde_json::json;
@@ -35,17 +35,59 @@ pub fn is_recent_leaver(p: &Person, grace: u32, today: NaiveDate) -> Option<Naiv
     (age >= 1 && age <= i64::from(grace)).then_some(end)
 }
 
+/// The automatic reply for a leaver. A template that names the manager is only used when
+/// the manager is known (name and email); otherwise `auto_reply_no_manager`, or no reply
+/// at all (`Err` says why), so nobody gets "Please contact  ()".
+pub fn reply_text(
+    cfg: &LeaverConfig,
+    p: &Person,
+    manager: Option<&Person>,
+) -> Option<Result<String, String>> {
+    let t = cfg.auto_reply.as_ref()?;
+    let names_manager = t.contains("{manager_name}") || t.contains("{manager_email}");
+    let mgr = manager.filter(|m| m.snap.email.is_some() && !m.snap.display_name.is_empty());
+    let text = match (names_manager, mgr) {
+        (true, None) => match &cfg.auto_reply_no_manager {
+            Some(alt) => alt.replace("{display_name}", &p.snap.display_name),
+            None => {
+                return Some(Err(
+                    "no manager with an email address is known, so no automatic reply was set (set leaver.auto_reply_no_manager for this case)".into(),
+                ));
+            }
+        },
+        (_, m) => t
+            .replace("{display_name}", &p.snap.display_name)
+            .replace(
+                "{manager_name}",
+                m.map_or("", |m| m.snap.display_name.as_str()),
+            )
+            .replace(
+                "{manager_email}",
+                m.and_then(|m| m.snap.email.as_deref()).unwrap_or(""),
+            ),
+    };
+    Some(Ok(text))
+}
+
+/// Days after the end date after which an account that is still enabled in Entra is
+/// reported: provisioning should have disabled it long before.
+pub const STILL_ENABLED_AFTER_DAYS: i64 = 2;
+
+/// `(items, notes, pending)`. Sessions are only revoked once the account is disabled in
+/// Entra: revoked earlier, the person could simply sign in again while the disable is still
+/// on its way (provisioning plus Connect Sync can take up to about 90 minutes).
 pub fn plan(
     cfg: &LeaverConfig,
     people: &[Person],
     found: &HashMap<String, Found>,
     state: &ModuleState,
     today: NaiveDate,
-) -> (Vec<LeaverItem>, Vec<String>) {
+) -> (Vec<LeaverItem>, Vec<String>, Vec<String>) {
     let by_emp: HashMap<&str, &Person> =
         people.iter().map(|p| (p.employee_id.as_str(), p)).collect();
     let mut items = Vec::new();
     let mut notes = Vec::new();
+    let mut pending = Vec::new();
     for p in people {
         let Some(end) = is_recent_leaver(p, cfg.grace_days, today) else {
             continue;
@@ -70,18 +112,38 @@ pub fn plan(
                 continue;
             }
         };
-        let reply = cfg.auto_reply.as_ref().map(|t| {
-            let mgr = p.snap.manager_id.as_deref().and_then(|m| by_emp.get(m));
-            t.replace("{display_name}", &p.snap.display_name)
-                .replace(
-                    "{manager_name}",
-                    mgr.map_or("", |m| m.snap.display_name.as_str()),
-                )
-                .replace(
-                    "{manager_email}",
-                    mgr.and_then(|m| m.snap.email.as_deref()).unwrap_or(""),
-                )
-        });
+        if u.enabled {
+            let days = (today - end).num_days();
+            if days >= STILL_ENABLED_AFTER_DAYS {
+                notes.push(format!(
+                    "{}: account {} is still enabled in Entra {days} days after the end date ({end}); provisioning has not disabled it. Check the provisioning logs (check-logs) and the account in AD",
+                    p.employee_id, u.upn
+                ));
+            } else {
+                pending.push(format!(
+                    "{}: waiting until the account is disabled in Entra before signing out everywhere",
+                    p.employee_id
+                ));
+            }
+            continue;
+        }
+        let manager = p
+            .snap
+            .manager_id
+            .as_deref()
+            .and_then(|m| by_emp.get(m))
+            .copied();
+        let reply = match reply_text(cfg, p, manager) {
+            None => None,
+            Some(Ok(t)) => Some(t),
+            Some(Err(why)) => {
+                notes.push(format!("{}: {why}", p.employee_id));
+                None
+            }
+        };
+        if reply.is_none() && !cfg.revoke_sessions {
+            continue;
+        }
         items.push(LeaverItem {
             employee_id: p.employee_id.clone(),
             user_id: u.id.clone(),
@@ -90,7 +152,7 @@ pub fn plan(
             reply,
         });
     }
-    (items, notes)
+    (items, notes, pending)
 }
 
 /// Exchange shows automatic replies as HTML: escape the text (names come from AFAS)
@@ -152,11 +214,12 @@ pub fn run(ctx: &Ctx<'_>, cfg: &LeaverConfig, state: &mut ModuleState) -> Module
         state.leaver_done.retain(|_, d| *d >= horizon);
     }
     let res = with_graph(ctx, &cfg.identity(), |g| -> Result<ModuleReport, String> {
-        let users = list_users(g).map_err(|e| format!("users: {e}"))?;
+        let users = ctx.users(g).map_err(|e| format!("users: {e}"))?;
         let found = match_users(ctx.people, &users);
-        let (items, notes) = plan(cfg, ctx.people, &found, state, ctx.today);
+        let (items, notes, pending) = plan(cfg, ctx.people, &found, state, ctx.today);
         let mut rep = ModuleReport {
             notes,
+            pending,
             planned: items
                 .iter()
                 .map(|it| Action {

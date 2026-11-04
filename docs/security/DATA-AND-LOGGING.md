@@ -1,30 +1,41 @@
 # Data classification and log inventory
 
 Covers OWASP ASVS 5.0 V14.1 (data classification and protection), V14.2.4 (handling rules)
-and V16.1.1 (log inventory). Last reviewed 2026-11-01 (version 0.10.0).
+and V16.1.1 (log inventory). Last reviewed 2026-11-03 (version 0.11.0).
 
 ## Data classes
 
 | Class | What | Protection |
 | --- | --- | --- |
-| **Secret** | AFAS token, Entra private keys and optional client secret, webhook secret, OAuth access tokens, GUI session ids, login link and form token, first sign-in codes (Temporary Access Pass) for new hires | Never in the config file, never logged, never in reports. Files 0600 and ownership-checked; tokens and codes only in memory. TLS 1.3 in transit. The first sign-in code exists only in the Graph response and the mail to the manager. |
-| **Personal** | Employee records from AFAS: names, UPN, email, employee number, job title, department, manager, cost center, start and end dates; optionally phone, office, company, employee type, job profile, work address | In memory during a run. Stored only where listed below, in the state directory (0700, service user). Sent only to Microsoft (provisioning, Graph) and, when configured, to the webhook receiver. |
+| **Secret** | AFAS token, Entra private keys and optional client secret, webhook secret, notification webhook secret, Teams and Slack webhook URLs (anyone with the URL can post), OAuth access tokens, GUI session ids, login link and form token, first sign-in codes (Temporary Access Pass) for new hires | Never in the config file, never logged, never in reports. Files 0600 and ownership-checked; tokens and codes only in memory. TLS 1.3 in transit. The first sign-in code exists only in the Graph response and the mail to the manager. |
+| **Personal** | Employee records from AFAS: names, UPN, email, employee number, job title, department, manager, cost center, start and end dates; optionally phone, office, company, employee type, job profile, work address | In memory during a run. Stored only where listed below, in the state directory (0700, service user). Sent only to Microsoft (provisioning, Graph) and, when configured, to the webhook receiver and the notification channels (see below). |
 | **Internal** | Configuration without secrets, run reports, audit and access logs, administrator user names | State and config directories 0700, files 0600. |
 
 The program sends nothing to third parties beyond AFAS (reading), Microsoft Entra and Graph,
-and the webhook URL you configure. The GUI loads no external resources.
+the webhook URL and the notification channels you configure. The GUI loads no external
+resources.
 
 ## Where personal data is stored
 
 | File (in `state.dir`) | Content | Retention |
 | --- | --- | --- |
-| `state.json` | Per employee: employee number and whether the account was active | Overwritten every applied run |
+| `state.json` | Per employee: employee number, whether the account was active, the values sent last time (name, UPN, email, job title, department, manager number, cost center and the enabled extra attributes; to show changes and notice changed sign-in names), and since when an employee is missing from AFAS | Overwritten every applied run; a departed employee drops out after `leaver_lookback_days`; a missing one stays until back in AFAS or marked handled (`missing ack`) |
 | `modules-state.json` | Per employee: the attributes the modules compare (UPN, name, department, job, manager, dates); first-sign-in and leaver bookkeeping (employee number and a date); webhook send queue with employee snapshots | Overwritten every applied run; bookkeeping entries older than 60 (codes) or 400 (leavers) days are dropped; the send queue holds at most 10,000 events |
-| `last-report.json` | Employee numbers with reasons (skipped, missing, warnings); module actions with UPN | Overwritten every run |
+| `last-report.json`, `last-dry-run-report.json` | Employee numbers with reasons (skipped, missing, managers who left, warnings); old and new UPN for sign-in name changes; module actions with UPN | Overwritten by the next sync / test run |
+| `last-preview.json`, `last-dry-run-preview.json` | Per account: name, UPN, department, OU, action and the values that change (old and new) | Overwritten by the next sync / test run |
+| `last-run.log`, `last-dry-run.log` | The log of the last run: employee numbers, data error reasons (which quote the rejected value, e.g. a UPN) | Overwritten by the next run |
+| `last-check-logs.json` | Provisioning failures: employee number, action, Microsoft's reason | Overwritten by the next `check-logs` |
+| `notify-state.json` | Per channel: what was reported (hashes only) and when | Overwritten every run |
 | `access.log` | Every module change: time, module, action, employee number, UPN, target group or mail address, result, actor | Append-only; rotate and keep according to your retention policy for access records (see below) |
 | `audit.log` | GUI actions: time, administrator, action, detail | Append-only; same as access.log |
 | `exceptions.json` | Exceptions: employee number, group, until, reason, who | Until removed; expired ones can be deleted |
 | `payload.json` | The exact upload, only when requested in a test run | Delete after use (GUI button); never written by a normal run |
+
+Files you ask for yourself (`--dump-payload`, `--preview-html`, `preview --html|--csv`, and the GUI's preview downloads, which are written to `audit.log`) contain personal data too; delete them after use.
+
+## Notifications
+
+`[notify]` sends findings to the channels you configure. By default a channel gets **employee numbers only**: names, sign-in names and email addresses are left out of texts and tables, quoted values in reasons and log lines are replaced by `'…'` and addresses by `…@…`, and the report is not attached. `personal_data = "names"` (per channel) adds names, sign-in names and the report; use it for internal mail, and decide with your privacy officer before using it for Slack or any external service. Email goes through Microsoft Graph from your own tenant; Teams and Slack messages are stored by Microsoft and Slack under their own retention.
 
 Rules:
 
@@ -40,7 +51,8 @@ Rules:
 | Log | Written by | Location | Format | Events | Readable by |
 | --- | --- | --- | --- | --- | --- |
 | Process log | All commands | stderr → journald (`journalctl -u afas-entra-sync*`) | Text, one event per line | Run start and end, errors with cause, TLS and sign-in failures, warnings. No secrets. | root, journal readers |
-| Run report | `sync` | `last-report.json` and stdout | JSON | Counts, thresholds, skipped records, missing employees, upload result, module results | Service user |
+| Run log | `sync`, `check-logs` | `last-run.log` / `last-dry-run.log`; sent with notifications | Text, one event per line, UTC | Every step of the run: AFAS pages, the plan, skipped records with reason, every upload call, modules, notifications | Service user (and the channels, see Notifications) |
+| Run report | `sync` | `last-report.json` (sync) or `last-dry-run-report.json` (test run), and stdout | JSON | Counts, thresholds, skipped records, missing employees, upload result, module results | Service user |
 | Audit log | GUI | `audit.log` | JSON Lines, UTC timestamps | Sign-in, refused sign-in (wrong or expired link), refused session (unknown or expired), refused form token, sign-out, settings changes, runs, exports, exceptions added or removed, GUI switched off | Service user |
 | Access log | Modules | `access.log` | JSON Lines, UTC timestamps | Group added or removed, first sign-in code sent, leaver actions, with result | Service user |
 | Provisioning logs | Microsoft | Entra admin center; `check-logs` | — | What Microsoft did with each record | Entra administrators |

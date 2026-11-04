@@ -185,6 +185,10 @@ pub struct LeaverConfig {
     /// Automatic reply; placeholders {display_name} {manager_name} {manager_email}.
     #[serde(default)]
     pub auto_reply: Option<String>,
+    /// Used instead of `auto_reply` when it names the manager but no manager (with an
+    /// email address) is known. Placeholder {display_name}. Without it: no reply then.
+    #[serde(default)]
+    pub auto_reply_no_manager: Option<String>,
     /// Also reply to external senders.
     #[serde(default)]
     pub auto_reply_external: bool,
@@ -383,6 +387,16 @@ pub fn validate(
             && (m.trim().is_empty() || m.len() > 4000)
         {
             return Err("leaver.auto_reply must be 1 to 4000 characters".into());
+        }
+        if let Some(m) = &l.auto_reply_no_manager {
+            if m.trim().is_empty() || m.len() > 4000 {
+                return Err("leaver.auto_reply_no_manager must be 1 to 4000 characters".into());
+            }
+            if m.contains("{manager_name}") || m.contains("{manager_email}") {
+                return Err(
+                    "leaver.auto_reply_no_manager is used when no manager is known: it cannot contain {manager_name} or {manager_email}".into(),
+                );
+            }
         }
         if l.enabled && !l.revoke_sessions && l.auto_reply.is_none() {
             return Err("leaver: nothing to do (revoke_sessions = false and no auto_reply)".into());

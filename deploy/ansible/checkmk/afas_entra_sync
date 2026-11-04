@@ -1,17 +1,41 @@
 #!/bin/bash
 # checkmk local check: /usr/lib/check_mk_agent/local/afas_entra_sync
-R=/var/lib/afas-entra-sync/last-report.json
+# Two services: the last sync (last-report.json, written by syncs only, so a manual test
+# run cannot hide a failed sync) and the last provisioning log check (last-check-logs.json).
+D=/var/lib/afas-entra-sync
+
+R=$D/last-report.json
 SVC='"AFAS-Entra sync"'
-if [ ! -r "$R" ]; then echo "2 $SVC - No report found ($R)"; exit 0; fi
-age=$(( $(date +%s) - $(stat -c %Y "$R") ))
-rc=$(jq -r '.exit_code // "unknown"' "$R" 2>/dev/null || echo unknown)
-sent=$(jq -r '.counts.sent_total // 0' "$R" 2>/dev/null || echo 0)
-mode=$(jq -r '.mode // "?"' "$R" 2>/dev/null || echo "?")
-res=$(jq -r '.result // ""' "$R" 2>/dev/null | tr '\n' ' ' | cut -c1-200)
-case "$rc" in
-  0) status=0 ;;
-  3) status=1 ;;
-  *) status=2 ;;
-esac
-if [ "$age" -gt 10800 ]; then status=2; res="No run in $((age / 3600)) hours. $res"; fi
-echo "$status $SVC sent=$sent exit $rc ($mode): $res"
+if [ ! -r "$R" ]; then
+  echo "2 $SVC - No sync report found ($R)"
+else
+  age=$(( $(date +%s) - $(stat -c %Y "$R") ))
+  rc=$(jq -r '.exit_code // "unknown"' "$R" 2>/dev/null || echo unknown)
+  sent=$(jq -r '.counts.sent_total // 0' "$R" 2>/dev/null || echo 0)
+  missing=$(jq -r '(.missing // []) | length' "$R" 2>/dev/null || echo 0)
+  res=$(jq -r '.result // ""' "$R" 2>/dev/null | tr '\n' ' ' | cut -c1-200)
+  case "$rc" in
+    0) status=0 ;;
+    3) status=1 ;;
+    *) status=2 ;;
+  esac
+  if [ "$age" -gt 10800 ]; then status=2; res="No sync in $((age / 3600)) hours. $res"; fi
+  echo "$status $SVC sent=$sent|missing=$missing exit $rc: $res"
+fi
+
+L=$D/last-check-logs.json
+SVC='"AFAS-Entra provisioning logs"'
+if [ -r "$L" ]; then
+  age=$(( $(date +%s) - $(stat -c %Y "$L") ))
+  rc=$(jq -r '.exit_code // "unknown"' "$L" 2>/dev/null || echo unknown)
+  fail=$(jq -r '.summary.failure // 0' "$L" 2>/dev/null || echo 0)
+  total=$(jq -r '.summary.total // 0' "$L" 2>/dev/null || echo 0)
+  msg=$(jq -r '((.warnings // []) + [(.error // empty)]) | join(" ")' "$L" 2>/dev/null | cut -c1-200)
+  case "$rc" in
+    0) status=0 ;;
+    3) status=1 ;;
+    *) status=2 ;;
+  esac
+  if [ "$age" -gt 10800 ]; then status=2; msg="No log check in $((age / 3600)) hours. $msg"; fi
+  echo "$status $SVC failed=$fail|entries=$total exit $rc: $fail of $total entries failed. $msg"
+fi

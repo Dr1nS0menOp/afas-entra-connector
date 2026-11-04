@@ -309,6 +309,12 @@ pub fn upload_all(
                             tracing::warn!(%status, "bulkUpload returned 2xx but not 202; treated as accepted");
                         }
                         out.calls_accepted += 1;
+                        let records = req["Operations"].as_array().map_or(0, Vec::len);
+                        tracing::info!(
+                            "upload call {}/{} accepted by Microsoft ({records} records)",
+                            i + 1,
+                            requests.len()
+                        );
                         break;
                     } else if status == StatusCode::UNAUTHORIZED && !refreshed {
                         refreshed = true;
@@ -354,7 +360,7 @@ pub fn upload_all(
     Ok(out)
 }
 
-#[derive(Debug, Default, Serialize, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LogSummary {
     pub total: usize,
     pub success: usize,
@@ -363,9 +369,12 @@ pub struct LogSummary {
     pub warning: usize,
     pub other: usize,
     pub failures: Vec<LogFailure>,
+    /// Newest entry seen (UTC), to tell whether the last upload was processed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latest_utc: Option<String>,
 }
 
-#[derive(Debug, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LogFailure {
     pub activity_utc: String,
     pub source_id: String,
@@ -431,6 +440,18 @@ pub fn read_logs(
                 }
                 cur.as_str().unwrap_or_default().to_string()
             };
+            let when = s(&["activityDateTime"]);
+            let newer = |a: &str, b: &str| match (
+                chrono::DateTime::parse_from_rfc3339(a),
+                chrono::DateTime::parse_from_rfc3339(b),
+            ) {
+                (Ok(x), Ok(y)) => x > y,
+                (Ok(_), Err(_)) => true,
+                _ => false,
+            };
+            if sum.latest_utc.as_deref().is_none_or(|l| newer(&when, l)) && !when.is_empty() {
+                sum.latest_utc = Some(when.clone());
+            }
             match s(&["provisioningStatusInfo", "status"]).as_str() {
                 "success" => sum.success += 1,
                 "skipped" => sum.skipped += 1,

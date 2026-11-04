@@ -45,6 +45,8 @@ max_drop_percent = 10        # drop vs. the last successful run larger than this
 max_disables_per_run = 10    # more new disables = stop (to proceed: --allow-mass-disable)
 max_invalid_percent = 5      # more invalid records = stop (points to a mapping error)
 max_calls_per_run = 200      # Entra P1 allows 2,000 calls per 24 hours
+max_new_per_run = 25         # more employees new since the last run = stop (--allow-mass-create)
+max_upn_changes_per_run = 5  # more changed sign-in names = stop (--allow-upn-changes)
 
 [upload]
 batch_size = 50              # Microsoft maximum

@@ -58,15 +58,22 @@ fn user(id: &str, emp: Option<&str>, upn: &str) -> Value {
     json!({ "id": id, "userPrincipalName": upn, "employeeId": emp, "mail": upn, "accountEnabled": true })
 }
 
-fn users_json() -> String {
-    json!({ "value": [
+/// The Entra users; disabled have accountEnabled = false (a departing employee once
+/// provisioning has disabled the account).
+fn users_json_with(disabled: &[&str]) -> String {
+    let mut v = vec![
         user(U1, Some("00001"), "user00001@contoso.nl"),
         user(U2, Some("00002"), "user00002@contoso.nl"),
         user(U3, Some("00003"), "user00003@contoso.nl"),
         user(U4, Some("00004"), "user00004@contoso.nl"),
         user(UADM, None, "admin@contoso.nl"),
-    ]})
-    .to_string()
+    ];
+    for u in &mut v {
+        if disabled.contains(&u["id"].as_str().unwrap()) {
+            u["accountEnabled"] = json!(false);
+        }
+    }
+    json!({ "value": v }).to_string()
 }
 
 struct Env {
@@ -78,6 +85,10 @@ struct Env {
 
 impl Env {
     fn new() -> Self {
+        Self::with_disabled(&[U3])
+    }
+
+    fn with_disabled(disabled: &[&str]) -> Self {
         let mut e = Env {
             afas: Server::new(),
             ms: Server::new(),
@@ -100,7 +111,7 @@ impl Env {
         .create();
         e.ms.mock("GET", "/v1.0/users")
             .match_query(Matcher::Any)
-            .with_body(users_json())
+            .with_body(users_json_with(disabled))
             .create();
         e
     }
@@ -211,6 +222,7 @@ fn go(cfg: &Config, apply: bool) -> RunResult {
         dump_payload: None,
         use_system_proxy: false,
         actor: "test".into(),
+        ..Default::default()
     };
     run(cfg, &o, &|_| {}).map_err(|(e, _)| e).unwrap()
 }
@@ -1552,7 +1564,7 @@ fn new_hires_test_run_and_maximum_per_run() {
     // And one whose account is not in Entra yet: a note in the report, not planned.
     rs.push(row("00009", plus(1), None));
     let make = |max: u32| {
-        let mut env = Env::new();
+        let mut env = Env::with_disabled(&[U2, U3]);
         env.set_rows(&rs);
         let cfg = env.cfg(&(joiner_cfg(&env, "manager") + &format!("max_per_run = {max}\n")));
         (env, cfg)
@@ -1618,7 +1630,7 @@ fn departing_employees_test_run_maximum_and_missing_account() {
     rs[1] = row("00002", minus(400), Some(minus(1)));
     rs.push(row("00009", minus(400), Some(minus(1))));
     let make = |max: u32| {
-        let mut env = Env::new();
+        let mut env = Env::with_disabled(&[U2, U3]);
         env.set_rows(&rs);
         let cfg = env.cfg(&leaver_cfg(&env, &format!("max_per_run = {max}\n")));
         (env, cfg)

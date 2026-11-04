@@ -1,7 +1,7 @@
 # Roadmap afas-entra-sync
 
 Recorded 2026-10-31, starting from version 0.1.0 (PoC): employees from one GetConnector,
-a fixed set of attributes, CLI only. Current version: 0.10.0 (doctor health check, afas-fields, module-setup, readable output, certificate expiry warnings; 0.9.3: OWASP ASVS 5.0 L2 self-assessment and OpenSSF readiness, see docs/security; 0.9.0: optional modules: roles and licences, first sign-in code for new hires (joiners), actions for departing employees (leavers), webhook, access log, exceptions).
+a fixed set of attributes, CLI only. Current version: 0.11.0 (test-run preview per account, notifications by email, Teams, Slack and webhook, safety fixes for late leavers, missing employees, mass creates and UPN changes; 0.10.0: doctor health check, afas-fields, module-setup, readable output, certificate expiry warnings; 0.9.3: OWASP ASVS 5.0 L2 self-assessment and OpenSSF readiness, see docs/security; 0.9.0: optional modules: roles and licences, first sign-in code for new hires (joiners), actions for departing employees (leavers), webhook, access log, exceptions).
 
 Order = proposed build order. Every item ships with tests at the same level as 0.1.0
 (unit, e2e against mocks, property tests, mutation tests).
@@ -64,7 +64,7 @@ Entra; see README.
   user header; CSRF token, read-only mode, strict CSP, no JavaScript, audit log.
 - 20 GUI tests plus visual review (light, dark, mobile).
 
-Possible later additions: dry-run diff per attribute, certificate expiry warning,
+Possible later additions: ~~dry-run diff per attribute~~ (0.11.0, Preview page), ~~certificate expiry warning~~ (0.10.0),
 CSV export of exclusions.
 
 ## 5. Smaller items
@@ -98,8 +98,19 @@ Still open:
 - Writing values back to AFAS (e.g. the created UPN or email) through an UpdateConnector.
 - Access review page in the GUI (per group: members, since when, through which rule).
 - Teams/SharePoint site membership (beyond groups).
-- Manager notification on movers (now via the webhook).
-- Certificate expiry warning in report and GUI.
+- Manager notification on movers (now via the webhook). Notifications to IT/HR about managers who left: 0.11.0 (`[notify]`).
+- ~~Certificate expiry warning in report and GUI~~ (0.10.0).
+
+## 7. Before the first real run, and while it runs — BUILT in 0.11.0
+
+- Test-run preview per account (create / enable / disable / update with old → new / link first / conflict), with the OU, optionally compared with Entra itself; terminal, GUI and standalone page.
+- Notifications by email, Teams, Slack and webhook, with plain-language findings and the full log.
+- Safety: an end date entered late still disables; a moved start date counts as a disable; employees missing from AFAS stay reported until handled; thresholds for mass creates and sign-in name changes.
+
+Still open:
+- Dutch texts for notifications and the preview (now English, like the rest of the tool).
+- Send a missing employee as disabled after a configurable number of days, with its last values (now: people decide).
+- Read the target OU from the provisioning job itself instead of `preview.new_accounts_ou`.
 
 ## Questions to settle per deployment
 

@@ -11,7 +11,7 @@
 use super::records::{AccessEntry, Exception, ExceptionKind, append_access, load_exceptions, now};
 use super::settings::{RoleRule, RolesConfig};
 use super::{Action, Ctx, Found, ModuleReport, Person, match_users, with_graph};
-use crate::graph::{EntraUser, GResult, Graph, USER_SELECT, list_users, seg};
+use crate::graph::{EntraUser, GResult, Graph, USER_SELECT, seg};
 use chrono::NaiveDate;
 use reqwest::Method;
 use serde_json::{Value, json};
@@ -320,7 +320,7 @@ pub fn run(ctx: &Ctx<'_>, cfg: &RolesConfig) -> ModuleReport {
         Err(e) => return ModuleReport::errored(e),
     };
     let res = with_graph(ctx, &cfg.identity(), |g| -> Result<ModuleReport, String> {
-        let users = list_users(g).map_err(|e| format!("users: {e}"))?;
+        let users = ctx.users(g).map_err(|e| format!("users: {e}"))?;
         let found = match_users(ctx.people, &users);
         let groups = read_groups(g, cfg)?;
         let p = plan(cfg, ctx.people, &found, &groups, &exceptions, ctx.today);

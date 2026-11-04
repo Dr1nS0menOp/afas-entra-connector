@@ -350,12 +350,26 @@ Without `--apply` nothing is sent to Microsoft, so this is safe to try.
 sudo -u afas-sync afas-entra-sync sync --dump-payload /var/lib/afas-entra-sync/payload.json
 ```
 
-On screen you get a short summary; the full report (`--json`, and always in
-`/var/lib/afas-entra-sync/last-report.json`) shows:
+On screen you get a short summary, then a table that fills up line by line: per account
+what Microsoft would do (create, enable, disable, update with old → new), where the account
+is, and why. `sudo -u afas-sync afas-entra-sync preview --all` shows every account again;
+`--html ~/preview.html` writes it as a page for a browser (personal data: delete it
+afterwards), and the GUI shows it under **Preview**. To see what it looks like before you
+have AFAS access: `afas-entra-sync preview --demo`.
+
+Give the test run read access to Entra (`sudo afas-entra-sync module-setup preview`, then
+`[preview]` in the config; see [MODULES.md](MODULES.md#test-run-preview-read-only-look-up))
+and it also does most of step 5c for you: an account marked **Link first** has a sign-in name
+that already exists in Entra without employee number, so Microsoft would create a second
+one. Set `preview.new_accounts_ou` to the OU of the provisioning app to see where new
+accounts go.
+
+The full report (`--json`, and always in `/var/lib/afas-entra-sync/last-dry-run-report.json`)
+shows:
 
 - `counts`: active, new hires (still disabled), departing employees (leavers).
 - `exclusions`: skipped records with data errors and why. Have HR fix them before going live.
-- `warnings`: for example a manager who is not in the upload.
+- `warnings`: for example a manager who is not in the upload; `manager_gaps` groups them per manager.
 - `violations`: a safety threshold was hit.
 
 **5b. Link existing accounts.** Microsoft recognises existing AD accounts only by
@@ -448,7 +462,11 @@ After 5 to 10 minutes the result is in Enterprise app → Provisioning logs, or 
 **6d. Expand.** Run a test run and 5c again for the new departments, then widen or remove the
 scoping filter. The first run without earlier state counts every departing employee in the window as a
 possible disable; if that hits the threshold, check the list and proceed deliberately with
-`--allow-mass-disable`.
+`--allow-mass-disable`. From the second run on, `max_new_per_run` (25) stops a run in which
+many employees are new since the last one: that is what a changed employee number field or
+staff category prefix looks like, and Microsoft would create a second account for each. A
+real large intake: check the preview, then `--allow-mass-create`. Likewise
+`max_upn_changes_per_run` (5) for sign-in names (`--allow-upn-changes`).
 
 **6e. Change the process** with HR and the service desk:
 
@@ -517,18 +535,29 @@ Keep the AFAS token in the scheduler's secret store.
 
 **Provisioning logs.** Also run `check-logs --since-minutes 60` every hour, a quarter after
 the sync (`deploy/ansible/run-check-logs.yml`). Exit 50 means Microsoft rejected records,
-for example because of a UPN conflict.
+for example because of a UPN conflict. Exit 3 means the last upload has not been processed
+at all ten minutes or more after it: the provisioning job is paused or in quarantine, or
+`entra.job_id` points to another job. The result is kept in `last-check-logs.json`.
 
-**Checkmk.** `deploy/ansible/checkmk/afas_entra_sync` is a local check: OK on exit 0, WARN
-on exit 3, CRIT on any other exit code, a broken report, or no run for more than 3 hours.
-A manual test run overwrites the report; the status then shows `(dry-run)`.
+**Notifications.** Configure `[notify]` (see [MODULES.md](MODULES.md#notifications)) and the
+tool tells the people who have to act: IT gets failures, safety stops, provisioning errors
+and certificates; HR gets the data errors, managers who left and employees missing from AFAS,
+each with what to do. Run `afas-entra-sync notify-test` once to check every channel. A
+failure is sent once (and again after 24 hours while it lasts), so a broken night does not
+fill an inbox; when it works again, everyone hears that too.
+
+**Checkmk.** `deploy/ansible/checkmk/afas_entra_sync` is a local check with two services.
+*AFAS-Entra sync*: OK on exit 0, WARN on exit 3, CRIT on any other exit code, a broken report,
+or no sync for more than 3 hours. It reads `last-report.json`, which only a sync writes, so a
+manual test run (which writes `last-dry-run-report.json`) cannot hide a failed sync.
+*AFAS-Entra provisioning logs*: the same for the last `check-logs`.
 
 **Exit codes:**
 
 | Code | Meaning | What to do |
 | --- | --- | --- |
 | 0 | All good | Nothing |
-| 3 | Done, but something needs attention | `exclusions` and `disappeared_while_active` to HR; a certificate that expires within 7 days (`notices`) |
+| 3 | Done, but something needs attention | `exclusions` and `missing` to HR; a certificate that expires within 7 days (`notices`); `check-logs`: the last upload was not processed |
 | 10 | Configuration error | Run `check-config`, then `doctor` |
 | 11 | Another run is active | Double scheduling? |
 | 20 | Safety stop, nothing uploaded | Read the report; cause in AFAS data or threshold |
@@ -550,7 +579,8 @@ Example with 600 employees and a run every hour:
 
 | What | When | How |
 | --- | --- | --- |
-| Skipped records to HR | On exit 3 | `exclusions` and `disappeared_while_active` from the report |
+| Skipped records to HR | On exit 3 (or automatically with `[notify]`) | `exclusions` and `missing` from the report |
+| Employees missing from AFAS | Until each is resolved | HR enters the end date, or IT disables the account and runs `missing ack <number>` (or *Mark handled* on the GUI overview) |
 | Renew the certificate | A month before expiry: the report, the GUI and `doctor` say so; in the last 7 days runs end with exit 3 | `sudo afas-entra-sync install --renew-cert` (modules: `module-setup <module> --renew`), upload the new certificate, remove the old one only after a successful run |
 | Renew the AFAS token | When AFAS revokes it, or when staff change | Replace the token file (or secret) |
 | New version | On release | Replace the binary (Ansible verifies the checksum) |

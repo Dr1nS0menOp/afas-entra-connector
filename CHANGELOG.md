@@ -3,6 +3,97 @@
 All notable changes. Versions follow [Semantic Versioning](https://semver.org/); before
 1.0 a minor version may change configuration.
 
+## 0.11.0 – 2026-11-03
+
+Safer before the first real run, a test run you can actually read, and reports that
+reach people. Existing configurations keep working; the state file is upgraded on the
+next successful sync (version 2; an older program cannot read it back).
+
+**Safety fixes**
+
+- **A disable that slipped past the threshold:** an account that was active last run and
+  is disabled now because its start date moved into the future (a rehire row, a
+  correction, a wrong field) did not count towards `max_disables_per_run`. It does now.
+- **An end date entered late:** an employee whose end date was more than
+  `leaver_lookback_days` in the past (HR entered it late, or the timer was off for a
+  month) was never sent as disabled and kept an enabled account. If the account was active
+  last run, it is now sent once more, disabled. The same for a new employment that starts
+  after the pre-hire window. Their groups (roles module) follow.
+- **Missing from AFAS, reported once:** someone who disappeared from the GetConnector while
+  active was reported in one run and then forgotten, with the account still enabled. They
+  now stay in the state (`missing_since`) and are reported on every run until they are
+  back in AFAS or marked as handled: `missing list`, `missing ack <number>` or the button
+  on the GUI overview. Still never disabled automatically.
+- **New thresholds:** `policy.max_new_per_run` (default 25) stops a run when many employee
+  numbers are new since the last run (a changed employee number mapping or staff category
+  prefix would create a second account for everybody); `policy.max_upn_changes_per_run`
+  (default 5) stops a run when many sign-in names change. Proceed deliberately with
+  `--allow-mass-create` / `--allow-upn-changes` or the boxes under Run in the GUI (typed
+  confirmation is now `PROCEED ANYWAY` for every override). The first run is not limited
+  by the new-records threshold.
+- **Managers who left:** employees whose manager has left, is not in AFAS, is skipped
+  because of a data error or starts later are grouped per manager in the report
+  (`manager_gaps`), the terminal summary, the GUI and the notifications.
+
+**Test run (dry-run) preview**
+
+- Account by account what the run would do: create, create disabled, enable, disable,
+  update (old → new per attribute), no change, link first, conflict, skipped, later, not
+  sent, missing; where the account is (`example.com/Staff/Sales`, or Entra ID) and in which
+  upload call it goes.
+- With an app registration that may read users (`[preview]`, or that of an enabled module)
+  a test run compares with Entra itself, and finds accounts that would be **created twice**
+  (sign-in name exists without employee number). Without one it compares with what the last
+  sync sent. `preview.new_accounts_ou` says where new accounts go.
+- In the terminal the table fills up line by line; `afas-entra-sync preview` shows it again
+  (`--all`, `--problems`, `--sync`, `--csv`, `--html`). The GUI has a **Preview** page with
+  the pipeline from AFAS to Microsoft, a per-OU overview and a table that fills up call by
+  call (CSS only, no JavaScript; still for people who prefer reduced motion), with HTML and
+  CSV downloads. `sync --preview-html <file>` writes the same page. `preview --demo` shows
+  it with fictional people.
+- Values that were emptied in AFAS but stay in AD are shown as such.
+
+**Notifications** (`[notify]`)
+
+- Email (Microsoft Graph with its own app registration, `Mail.Send` scoped with Exchange
+  RBAC for Applications), Microsoft Teams (Adaptive Card for Workflows or incoming
+  webhooks), Slack (Block Kit) and any webhook (JSON, HMAC-SHA256 signed like the webhook
+  module). Several channels, each with its own audience (`it`, `hr`) and triggers.
+- Each message explains, per point: what happened, what it means, why the tool does not fix
+  it itself, what to do and who does it. Points: run failed (per cause), safety stop (per
+  threshold, with the people involved), manager who left, missing from AFAS, data errors
+  with how to fix them, sign-in names that change, values emptied in AFAS that stay in AD
+  (a leave date in particular), modules, certificates, provisioning failures and an upload
+  Microsoft has not processed.
+- The full log of the run goes along (attached to email, in the webhook, collapsed in
+  Teams, the last lines in Slack for failures); it is also kept as `last-run.log`.
+- A failure is sent once and repeated after `repeat_hours` (default 24); points of
+  attention when something is new; "works again" and "all clear" once. Test runs only with
+  `--notify`. A failing channel never changes the exit code.
+- Personal data: employee numbers only by default; `personal_data = "names"` per channel
+  adds names and sign-in names. Without names, quoted values in reasons and log lines are
+  hidden too.
+- `notify-test` sends an example to every channel; `notify-test --render <dir>` writes the
+  examples to files without sending anything.
+
+**Testing and monitoring**
+
+- A test run writes `last-dry-run-report.json`; `last-report.json` is only written by a
+  sync, so a manual test run can no longer hide a failed scheduled sync from monitoring.
+- `check-logs` writes `last-check-logs.json`, warns (exit 3) when the last upload was not
+  processed at all (paused or quarantined job, wrong job id), and notifies. The Checkmk
+  check reports it as a second service.
+- Departing employees: sessions are only revoked once the account is disabled in Entra
+  (revoked earlier, the person could sign in again while the disable is on its way); an
+  account still enabled two days after the end date is reported. `leaver.auto_reply_no_manager`
+  is used when no manager is known, instead of "Please contact  ()".
+- New hires: "already has a Temporary Access Pass" is noted once, not every hour.
+- The modules read the Entra users once per run instead of once per module.
+- `doctor` checks the preview look-up and the notification channels.
+- `module-setup notify` and `module-setup preview` create their certificates.
+- The GUI may no longer change `entra.job_id`, `entra.service_principal_id`,
+  `policy.allowed_upn_domains`, `[notify]` or `[preview]`.
+
 ## 0.10.0 – 2026-11-01
 
 Easier to set up, run and keep running. No configuration changes.

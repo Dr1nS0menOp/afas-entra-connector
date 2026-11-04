@@ -105,6 +105,9 @@ pub struct ModuleState {
     /// Employee → end date the leaver actions were done for.
     #[serde(default)]
     pub leaver_done: BTreeMap<String, NaiveDate>,
+    /// Employee → start date for which "already has a pass" was reported (once).
+    #[serde(default)]
+    pub tap_existing_noted: BTreeMap<String, NaiveDate>,
     /// Day `attrs` was saved; older than a week = start a new baseline.
     #[serde(default)]
     pub attrs_date: Option<NaiveDate>,
@@ -210,6 +213,9 @@ pub struct ModuleReport {
     pub failed: Vec<String>,
     /// Employees skipped and why (not in Entra yet, conflicts, segregation of duties).
     pub notes: Vec<String>,
+    /// Waiting, expected to resolve by itself (no attention needed, no exit 3).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pending: Vec<String>,
     /// Safety threshold hit: nothing applied by this module.
     pub violations: Vec<String>,
     /// The module could not run (config, sign-in, Graph error).
@@ -282,6 +288,41 @@ pub struct Ctx<'a> {
     pub state_dir: &'a Path,
     /// Who triggered the run, for the access log.
     pub actor: &'a str,
+    /// The Entra users, read once per run and shared by the modules.
+    pub users: std::cell::RefCell<Option<Vec<EntraUser>>>,
+}
+
+impl Ctx<'_> {
+    /// All Entra users: read on first use (with the calling module's sign-in), then shared.
+    pub fn users(&self, g: &Graph<'_>) -> crate::graph::GResult<Vec<EntraUser>> {
+        if let Some(u) = self.users.borrow().as_ref() {
+            return Ok(u.clone());
+        }
+        let u = crate::graph::list_users(g)?;
+        *self.users.borrow_mut() = Some(u.clone());
+        Ok(u)
+    }
+}
+
+/// Signs in as an app registration (certificate) and hands a Graph client to `f`.
+pub fn graph_as<R>(
+    cfg: &Config,
+    id: &settings::ModuleIdentity,
+    use_system_proxy: bool,
+    sleep: &dyn Fn(Duration),
+    f: impl FnOnce(&Graph<'_>) -> R,
+) -> Result<R, String> {
+    let mut e = cfg.entra.clone();
+    e.client_id = id.client_id.clone();
+    e.auth = AuthMode::Certificate;
+    e.certificate_pem = Some(id.certificate_pem.clone());
+    e.private_key_pem = Some(id.private_key_pem.clone());
+    e.client_secret_env = None;
+    let cred = Credential::from_config(&e).map_err(|e| e.to_string())?;
+    let client = build_client(e.timeout_secs, use_system_proxy, &cfg.tls)?;
+    let tokens = TokenProvider::new(&e, &client, cred, sleep);
+    let g = Graph::new(&e.graph_base, &client, tokens, sleep)?;
+    Ok(f(&g))
 }
 
 /// Signs in as a module's own app registration and hands a Graph client to `f`.
@@ -290,17 +331,7 @@ pub fn with_graph<R>(
     id: &settings::ModuleIdentity,
     f: impl FnOnce(&Graph<'_>) -> R,
 ) -> Result<R, String> {
-    let mut e = ctx.cfg.entra.clone();
-    e.client_id = id.client_id.clone();
-    e.auth = AuthMode::Certificate;
-    e.certificate_pem = Some(id.certificate_pem.clone());
-    e.private_key_pem = Some(id.private_key_pem.clone());
-    e.client_secret_env = None;
-    let cred = Credential::from_config(&e).map_err(|e| e.to_string())?;
-    let client = build_client(e.timeout_secs, ctx.use_system_proxy, &ctx.cfg.tls)?;
-    let tokens = TokenProvider::new(&e, &client, cred, ctx.sleep);
-    let g = Graph::new(&e.graph_base, &client, tokens, ctx.sleep)?;
-    Ok(f(&g))
+    graph_as(ctx.cfg, id, ctx.use_system_proxy, ctx.sleep, f)
 }
 
 /// Runs every enabled module. `state` is updated in place; the caller saves it

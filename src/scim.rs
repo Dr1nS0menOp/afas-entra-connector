@@ -104,6 +104,88 @@ pub fn user_data(r: &PlannedRecord) -> Value {
     Value::Object(data)
 }
 
+/// One attribute the tool sends: stable key (as stored in the state), label for people,
+/// and the AD attribute the default mapping of the provisioning app writes it to.
+pub struct Attribute {
+    pub key: &'static str,
+    pub label: &'static str,
+    pub ad: &'static str,
+}
+
+const fn attr(key: &'static str, label: &'static str, ad: &'static str) -> Attribute {
+    Attribute { key, label, ad }
+}
+
+/// Every attribute, in the order people read them. `active` is not here: it is the action.
+pub const ATTRIBUTES: &[Attribute] = &[
+    attr("userName", "Sign-in name (UPN)", "userPrincipalName"),
+    attr("displayName", "Display name", "displayName"),
+    attr("givenName", "Given name", "givenName"),
+    attr("familyName", "Family name", "sn"),
+    attr("title", "Job title", "title"),
+    attr("department", "Department", "department"),
+    attr("manager", "Manager", "manager"),
+    attr("email", "Email", "mail"),
+    attr("phoneWork", "Work phone", "telephoneNumber"),
+    attr("mobilePhone", "Mobile", "mobile"),
+    attr("officeLocation", "Office", "physicalDeliveryOfficeName"),
+    attr("organization", "Company", "company"),
+    attr("userType", "Employee type", "employeeType"),
+    attr("costCenter", "Cost center", "costCenter mapping"),
+    attr("jobProfile", "Job profile", "jobProfile mapping"),
+    attr("streetAddress", "Street", "streetAddress"),
+    attr("postalCode", "Postal code", "postalCode"),
+    attr("locality", "City", "l"),
+    attr("country", "Country", "c"),
+    attr("hireDate", "Hire date", "hireDate mapping"),
+    attr("leaveDate", "Leave date", "leaveDate mapping"),
+];
+
+pub fn attribute(key: &str) -> Option<&'static Attribute> {
+    ATTRIBUTES.iter().find(|a| a.key == key)
+}
+
+/// The values this record sends, flat (attribute key → value). Exactly what `user_data`
+/// puts in the payload, so a difference here is a difference Microsoft receives.
+/// For the manager: the manager's employee number.
+pub fn sent_values(r: &PlannedRecord) -> std::collections::BTreeMap<String, String> {
+    let e = &r.employee;
+    let mut m = std::collections::BTreeMap::new();
+    let mut put = |k: &str, v: Option<&String>| {
+        if let Some(v) = v {
+            m.insert(k.to_string(), v.clone());
+        }
+    };
+    put("userName", Some(&e.upn));
+    put("displayName", Some(&e.display_name));
+    put("givenName", Some(&e.given_name));
+    put("familyName", Some(&e.family_name));
+    put("title", e.job_title.as_ref());
+    put("department", e.department.as_ref());
+    put("manager", r.manager_id.as_ref());
+    put("email", e.email.as_ref());
+    put("phoneWork", e.extra.phone_work.as_ref());
+    put("mobilePhone", e.extra.phone_mobile.as_ref());
+    put("officeLocation", e.extra.office.as_ref());
+    put("organization", e.extra.company.as_ref());
+    put("userType", e.extra.employee_type.as_ref());
+    put("costCenter", e.cost_center.as_ref());
+    put("jobProfile", e.extra.job_profile.as_ref());
+    put("streetAddress", e.extra.street.as_ref());
+    put("postalCode", e.extra.postal_code.as_ref());
+    put("locality", e.extra.city.as_ref());
+    put("country", e.extra.country.as_ref());
+    if r.send_hire_date {
+        m.insert("hireDate".into(), e.start_date.to_string());
+    }
+    if r.send_leave_date
+        && let Some(end) = e.end_date
+    {
+        m.insert("leaveDate".into(), end.to_string());
+    }
+    m
+}
+
 /// Builds bulk requests of at most `batch_size` (1..=50) operations.
 pub fn bulk_requests(records: &[PlannedRecord], batch_size: usize) -> Vec<Value> {
     assert!((1..=50).contains(&batch_size), "batch_size must be 1..=50");

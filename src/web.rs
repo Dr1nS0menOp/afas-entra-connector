@@ -13,8 +13,6 @@
 //! All logic lives in `handle()`, without networking, so it is fully testable.
 
 use crate::config::{Config, Layers, OVERRIDES_FILE, is_locked};
-use crate::entra::{Credential, TokenProvider, read_logs};
-use crate::http::build_client;
 use crate::state::{REPORT_FILE, write_atomic};
 use crate::sync::{RunOptions, run};
 use chrono::NaiveDate;
@@ -34,7 +32,8 @@ const MAX_BODY: usize = 64 * 1024;
 /// Header sent by Authentik (forward auth via Traefik).
 const USER_HEADER: &str = "x-authentik-username";
 pub const CONFIRM_APPLY: &str = "APPLY";
-pub const CONFIRM_MASS: &str = "ALLOW DISABLE";
+/// Typed confirmation when a safety threshold is deliberately overridden.
+pub const CONFIRM_MASS: &str = "PROCEED ANYWAY";
 
 pub struct WebOptions {
     pub config_path: PathBuf,
@@ -764,6 +763,24 @@ static SECTIONS: &[Section] = &[
                 },
             ),
             f(
+                "policy.max_new_per_run",
+                "Maximum new employees per run",
+                "More: the run stops. A changed employee number makes everybody new, and Microsoft would create a second account for each.",
+                Kind::Int {
+                    min: 1,
+                    max: 1_000_000,
+                },
+            ),
+            f(
+                "policy.max_upn_changes_per_run",
+                "Maximum changed sign-in names per run",
+                "More: the run stops. Usually a changed UPN rule in AFAS.",
+                Kind::Int {
+                    min: 1,
+                    max: 1_000_000,
+                },
+            ),
+            f(
                 "policy.max_invalid_percent",
                 "Maximum invalid records (%)",
                 "More usually points to a wrong field name.",
@@ -964,6 +981,12 @@ static SECTIONS: &[Section] = &[
                 Kind::LongText { max: 4000 },
             ),
             f(
+                "leaver.auto_reply_no_manager",
+                "Automatic reply without a known manager",
+                "Used when the reply above names the manager but none is known. {display_name}. Empty = no reply then.",
+                Kind::LongText { max: 4000 },
+            ),
+            f(
                 "leaver.auto_reply_external",
                 "Also reply to external senders",
                 "",
@@ -1151,6 +1174,8 @@ pub fn handle(app: &App, r: &Request<'_>) -> Response {
             "/gui/off" => post_gui_off(app, &layers, &user),
             "/exceptions/add" => post_exception_add(app, &layers, &form, &user),
             "/exceptions/remove" => post_exception_remove(&layers, &form, &user),
+            "/missing/ack" => post_missing_ack(&layers, &form, &user),
+            "/notify/test" => post_notify_test(app, &layers, &user),
             p => {
                 if let Some(slug) = p.strip_prefix("/settings/reset/") {
                     post_settings_reset(&layers, slug, &user)
@@ -1175,6 +1200,9 @@ pub fn handle(app: &App, r: &Request<'_>) -> Response {
         "/access.csv" => get_access_csv(&layers, query, &user),
         "/exceptions" => html(200, &flash_into(page_exceptions(app, &layers, None), query)),
         "/payload" => get_payload(&layers, &user),
+        "/preview" => html(200, &page_preview(app, &layers, query)),
+        "/preview.html" => get_preview_download(&layers, query, &user, false),
+        "/preview.csv" => get_preview_download(&layers, query, &user, true),
         p => match p.strip_prefix("/settings/").and_then(find_section) {
             Some(sec) => html(
                 200,
@@ -1496,10 +1524,10 @@ fn post_dry_run(app: &App, form: &[(String, String)], user: &str) -> Response {
         let opts = RunOptions {
             apply: false,
             as_of,
-            allow_mass_disable: false,
             dump_payload: keep_payload.then(|| dir2.join(PAYLOAD_FILE)),
             use_system_proxy: proxy,
             actor: actor.clone(),
+            ..Default::default()
         };
         let s = |d: Duration| sleep(d);
         match run(&cfg, &opts, &s) {
@@ -1511,7 +1539,10 @@ fn post_dry_run(app: &App, form: &[(String, String)], user: &str) -> Response {
 
 fn post_apply(app: &App, l: &Layers, form: &[(String, String)], user: &str) -> Response {
     let allow_mass = form_get(form, "allow_mass_disable") == Some("on");
-    let want = if allow_mass {
+    let allow_create = form_get(form, "allow_mass_create") == Some("on");
+    let allow_upn = form_get(form, "allow_upn_changes") == Some("on");
+    let any_override = allow_mass || allow_create || allow_upn;
+    let want = if any_override {
         CONFIRM_MASS
     } else {
         CONFIRM_APPLY
@@ -1527,24 +1558,35 @@ fn post_apply(app: &App, l: &Layers, form: &[(String, String)], user: &str) -> R
         app.sleep.clone(),
         app.use_system_proxy,
     );
-    let label = if allow_mass {
-        "sync with mass disable"
+    let mut overrides = Vec::new();
+    if allow_mass {
+        overrides.push("mass disable");
+    }
+    if allow_create {
+        overrides.push("mass create");
+    }
+    if allow_upn {
+        overrides.push("sign-in name changes");
+    }
+    let label = if overrides.is_empty() {
+        "sync".to_string()
     } else {
-        "sync"
+        format!("sync allowing {}", overrides.join(" and "))
     };
     let actor = format!("gui:{user}");
-    start_run(app, label, user, &l.config.state.dir, move || {
+    start_run(app, &label, user, &l.config.state.dir, move || {
         let cfg = match Config::load(&cfg_path) {
             Ok(c) => c,
             Err(e) => return (e.exit_code(), e.to_string()),
         };
         let opts = RunOptions {
             apply: true,
-            as_of: None,
             allow_mass_disable: allow_mass,
-            dump_payload: None,
+            allow_mass_create: allow_create,
+            allow_upn_changes: allow_upn,
             use_system_proxy: proxy,
             actor: actor.clone(),
+            ..Default::default()
         };
         let s = |d: Duration| sleep(d);
         match run(&cfg, &opts, &s) {
@@ -1591,38 +1633,30 @@ fn post_check_logs(app: &App, form: &[(String, String)], user: &str) -> Response
         Err(e) => return text(500, &e.to_string()),
     };
     start_run(app, "check-logs", user, &dir, move || {
-        let res = (|| {
-            let cfg = Config::load(&cfg_path)?;
-            let client = build_client(cfg.entra.timeout_secs, proxy, &cfg.tls)
-                .map_err(crate::error::AppError::Config)?;
-            let cred = Credential::from_config(&cfg.entra)?;
-            let s = |d: Duration| sleep(d);
-            let tokens = TokenProvider::new(&cfg.entra, &client, cred, &s);
-            read_logs(
-                &cfg.entra,
-                &client,
-                &tokens,
-                chrono::Utc::now() - chrono::Duration::minutes(minutes),
-            )
-        })();
-        match res {
-            Ok(s) => {
-                let code = if s.failure > 0 {
-                    crate::error::exit::LOG_FAILURES
-                } else {
-                    0
-                };
-                let mut msg = format!(
-                    "{} records: {} succeeded, {} failed, {} skipped, {} warnings.",
-                    s.total, s.success, s.failure, s.skipped, s.warning
-                );
-                for fl in s.failures.iter().take(20) {
-                    let _ = write!(msg, "\n{} {}: {}", fl.source_id, fl.action, fl.reason);
-                }
-                (code, msg)
-            }
-            Err(e) => (e.exit_code(), e.to_string()),
+        let cfg = match Config::load(&cfg_path) {
+            Ok(c) => c,
+            Err(e) => return (e.exit_code(), e.to_string()),
+        };
+        let s = |d: Duration| sleep(d);
+        let rep = crate::sync::check_logs(&cfg, minutes, proxy, &s);
+        if let Some(e) = &rep.error {
+            return (rep.exit_code, e.clone());
         }
+        let mut msg = String::new();
+        if let Some(s) = &rep.summary {
+            let _ = write!(
+                msg,
+                "{} records: {} succeeded, {} failed, {} skipped, {} warnings.",
+                s.total, s.success, s.failure, s.skipped, s.warning
+            );
+            for fl in s.failures.iter().take(20) {
+                let _ = write!(msg, "\n{} {}: {}", fl.source_id, fl.action, fl.reason);
+            }
+        }
+        for w in &rep.warnings {
+            let _ = write!(msg, "\n{w}");
+        }
+        (rep.exit_code, msg)
     })
 }
 
@@ -1808,6 +1842,196 @@ fn get_payload(l: &Layers, user: &str) -> Response {
     }
 }
 
+fn read_preview(l: &Layers, of_sync: bool) -> Option<crate::preview::Preview> {
+    std::fs::read(l.config.state.dir.join(crate::state::preview_file(of_sync)))
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+}
+
+fn get_preview_download(l: &Layers, query: &str, user: &str, csv: bool) -> Response {
+    let of_sync = query_get(query, "of").as_deref() == Some("sync");
+    let Some(p) = read_preview(l, of_sync) else {
+        return text(404, "No preview yet. Start a test run under Run.");
+    };
+    let what = if of_sync { "sync" } else { "test-run" };
+    audit(
+        &l.config.state.dir,
+        user,
+        "preview downloaded",
+        &format!("{what} {}", if csv { "csv" } else { "html" }),
+    );
+    let (body, ct, name) = if csv {
+        (
+            crate::preview::render_csv(&p),
+            "text/csv; charset=utf-8",
+            format!("afas-entra-{what}-preview.csv"),
+        )
+    } else {
+        (
+            crate::preview::render_page(&p, Some(l.config.tz())),
+            "text/html; charset=utf-8",
+            format!("afas-entra-{what}-preview.html"),
+        )
+    };
+    Response {
+        status: 200,
+        content_type: ct,
+        location: None,
+        disposition: Some(format!("attachment; filename=\"{name}\"")),
+        set_cookie: None,
+        body: body.into_bytes(),
+    }
+}
+
+fn post_missing_ack(l: &Layers, form: &[(String, String)], user: &str) -> Response {
+    let Some(id) = form_get(form, "employee")
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    else {
+        return text(400, "No employee number.");
+    };
+    let store = match crate::state::StateStore::new(&l.config.state.dir) {
+        Ok(s) => s,
+        Err(e) => return text(500, &e.to_string()),
+    };
+    match store.acknowledge_missing(&[id.to_string()]) {
+        Ok(done) => {
+            audit(
+                &l.config.state.dir,
+                user,
+                "missing acknowledged",
+                &done.join(", "),
+            );
+            redirect("/?ok=acked")
+        }
+        Err(e) => text(409, &e.to_string()),
+    }
+}
+
+fn post_notify_test(app: &App, l: &Layers, user: &str) -> Response {
+    if l.config.notify.is_none() {
+        return redirect("/run?m=notnotify");
+    }
+    let (cfg_path, sleep, proxy) = (
+        app.opts.config_path.clone(),
+        app.sleep.clone(),
+        app.use_system_proxy,
+    );
+    start_run(
+        app,
+        "test notification",
+        user,
+        &l.config.state.dir,
+        move || {
+            let mut cfg = match Config::load(&cfg_path) {
+                Ok(c) => c,
+                Err(e) => return (e.exit_code(), e.to_string()),
+            };
+            if let Some(n) = cfg.notify.as_mut() {
+                n.enabled = true;
+            }
+            let s = |d: Duration| sleep(d);
+            let host = crate::notify::host_name();
+            let ctx = crate::notify::Context {
+                cfg: &cfg,
+                source: "Test message".into(),
+                host: host.clone(),
+                log: Vec::new(),
+                log_path: None,
+                report: None,
+                use_system_proxy: proxy,
+                sleep: &s,
+                now: chrono::Utc::now(),
+            };
+            let res = crate::notify::dispatch(
+                &ctx,
+                "test",
+                crate::notify::Outcome::Attention,
+                &|_| Vec::new(),
+                &[
+                    (
+                        "Run".to_string(),
+                        "Test from the admin GUI (nothing was synchronised)".to_string(),
+                    ),
+                    ("Server".to_string(), host),
+                ],
+                None,
+                Some(crate::notify::render::Event::Test),
+            );
+            let ok = res.iter().all(|d| d.ok);
+            let msg = res
+                .iter()
+                .map(|d| {
+                    format!(
+                        "{}: {}",
+                        d.channel,
+                        if d.ok {
+                            "sent".to_string()
+                        } else {
+                            format!("FAILED, {}", d.detail)
+                        }
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            (
+                if ok {
+                    0
+                } else {
+                    crate::error::exit::MODULE_FAILED
+                },
+                msg,
+            )
+        },
+    )
+}
+
+fn page_preview(app: &App, l: &Layers, query: &str) -> String {
+    use crate::preview::{Show, render_html};
+    let of_sync = query_get(query, "of").as_deref() == Some("sync");
+    let show = Show::parse(&query_get(query, "show").unwrap_or_default());
+    let of = if of_sync { "sync" } else { "dry" };
+    let mut b = String::new();
+    let cur = |me: bool| if me { " aria-current=page" } else { "" };
+    let _ = write!(
+        b,
+        "<nav class=tabs aria-label=\"Which run\"><a href=\"/preview?of=dry\"{}>Last test run</a><a href=\"/preview?of=sync\"{}>Last sync</a></nav>",
+        cur(!of_sync),
+        cur(of_sync)
+    );
+    match read_preview(l, of_sync) {
+        None => {
+            let _ = write!(
+                b,
+                "<section class=empty><h2>{}</h2><p>{}</p><p><a class=btn href=/run>Go to Run</a></p></section>",
+                if of_sync {
+                    "No sync yet"
+                } else {
+                    "No test run yet"
+                },
+                if of_sync {
+                    "After the first sync this page shows, account by account, what was sent to Microsoft."
+                } else {
+                    "Start a test run under Run. This page then shows, account by account, what the sync would do: which accounts are created, enabled, disabled or updated, where they are, and what changes. Nothing is sent."
+                }
+            );
+        }
+        Some(p) => {
+            b.push_str(&render_html(
+                &p,
+                show,
+                &format!("/preview?of={of}&"),
+                Some(l.config.tz()),
+            ));
+            let _ = write!(
+                b,
+                "<section class=action><div><h2>Take it with you</h2><p>The same overview as a page to open in a browser, or as a spreadsheet. Both contain personal data; the download is written to the audit log.</p></div><div class=row><a class=btn href=\"/preview.html?of={of}\">Download page</a><a class=btn href=\"/preview.csv?of={of}\">Download CSV</a></div></section>"
+            );
+        }
+    }
+    layout(app, l, "preview", "Preview", &b)
+}
+
 fn post_payload_delete(l: &Layers, user: &str) -> Response {
     let _ = std::fs::remove_file(l.config.state.dir.join(PAYLOAD_FILE));
     audit(&l.config.state.dir, user, "payload deleted", "");
@@ -1837,9 +2061,19 @@ fn now() -> String {
 
 fn page_overview(app: &App, l: &Layers) -> String {
     let mut b = String::new();
-    let rep: Option<Value> = std::fs::read(l.config.state.dir.join(REPORT_FILE))
-        .ok()
-        .and_then(|d| serde_json::from_slice(&d).ok());
+    let read = |f: &str| -> Option<Value> {
+        std::fs::read(l.config.state.dir.join(f))
+            .ok()
+            .and_then(|d| serde_json::from_slice(&d).ok())
+    };
+    let sync_rep = read(REPORT_FILE);
+    let dry_rep = read(crate::state::DRY_RUN_REPORT_FILE);
+    // The scheduled sync is what matters; a newer test run gets its own card below.
+    let newer_dry = match (&sync_rep, &dry_rep) {
+        (Some(s), Some(d)) => (d["started_utc"].as_str() > s["started_utc"].as_str()).then_some(d),
+        _ => None,
+    };
+    let rep = sync_rep.clone().or(dry_rep.clone());
     let Some(r) = rep else {
         b.push_str(
             "<section class=empty><h2>No runs yet</h2><p>There is no report yet. Start a test run (dry-run) to see what the sync would do; nothing is sent to Microsoft.</p>\
@@ -1874,6 +2108,32 @@ fn page_overview(app: &App, l: &Layers) -> String {
         esc(r["today"].as_str().unwrap_or("?")),
         esc(&detail),
     );
+    if r["preview"].is_object() {
+        let of = if r["mode"] == "apply" { "sync" } else { "dry" };
+        let _ = write!(
+            b,
+            "<p class=note><a href=\"/preview?of={of}\">See account by account what {} →</a></p>",
+            if r["mode"] == "apply" {
+                "was sent"
+            } else {
+                "the sync would do"
+            }
+        );
+    }
+    if let Some(d) = newer_dry {
+        let code = d["exit_code"].as_i64().unwrap_or(-1);
+        let _ = write!(
+            b,
+            "<section class=action><div><h2>A newer test run</h2><p>Test run of {}: {}. The overview above is the last real sync.</p></div><div class=row><a class=btn href=\"/preview?of=dry\">See what it would do</a></div></section>",
+            esc(&fmt_time(d["started_utc"].as_str().unwrap_or(""))),
+            match code {
+                0 => "nothing needs attention",
+                3 => "it found points that need attention",
+                20 => "it would stop on a safety threshold",
+                _ => "it failed",
+            }
+        );
+    }
 
     if let Some(n) = r["notices"].as_array().filter(|n| !n.is_empty()) {
         b.push_str("<section class=\"verdict warn\"><h2>Needs your attention</h2><ul>");
@@ -1945,7 +2205,38 @@ fn page_overview(app: &App, l: &Layers) -> String {
         &r["exclusions"],
         &[("employee_id", "Employee number"), ("reason", "Reason")],
     );
-    if let Some(d) = r["disappeared_while_active"]
+    if let Some(m) = r["missing"].as_array().filter(|a| !a.is_empty()) {
+        let can_ack = !app.opts.read_only && r["mode"] == "apply";
+        let _ = write!(
+            b,
+            "<section><h2>Missing from AFAS while active ({})</h2><p class=note>These accounts stay enabled: someone who disappears from AFAS is never disabled automatically. HR enters an end date (the next sync disables the account), or IT disables it in AD and marks it as handled here. They are reported on every run until then.</p><table><thead><tr><th>Employee number</th><th>Missing since</th><th>Why</th><th></th></tr></thead><tbody>",
+            m.len()
+        );
+        for x in m {
+            let id = x["employee_id"].as_str().unwrap_or("?");
+            let why = x["excluded_because"].as_str().map_or_else(
+                || "not in AFAS".to_string(),
+                |e| format!("in AFAS, but skipped: {e}"),
+            );
+            let _ = write!(
+                b,
+                "<tr><td><code>{}</code></td><td class=nowrap>{}</td><td>{}</td><td>{}</td></tr>",
+                esc(id),
+                esc(x["since"].as_str().unwrap_or("")),
+                esc(&why),
+                if can_ack {
+                    format!(
+                        "<form method=post action=/missing/ack><input type=hidden name=csrf value={}><input type=hidden name=employee value=\"{}\"><button class=quiet>Mark handled</button></form>",
+                        app.csrf,
+                        esc(id)
+                    )
+                } else {
+                    String::new()
+                }
+            );
+        }
+        b.push_str("</tbody></table></section>");
+    } else if let Some(d) = r["disappeared_while_active"]
         .as_array()
         .filter(|a| !a.is_empty())
     {
@@ -1958,6 +2249,46 @@ fn page_overview(app: &App, l: &Layers) -> String {
             let _ = write!(b, "<code>{}</code> ", esc(id.as_str().unwrap_or("?")));
         }
         b.push_str("</p></section>");
+    }
+    if let Some(g) = r["manager_gaps"].as_array().filter(|a| !a.is_empty()) {
+        let _ = write!(
+            b,
+            "<section><h2>Managers who left or cannot be linked ({})</h2><p class=note>Employees still report to these managers in AFAS. AD keeps the old manager until HR sets a new one in AFAS.</p><table><thead><tr><th>Manager</th><th>Situation</th><th>Employees</th></tr></thead><tbody>",
+            g.len()
+        );
+        for x in g {
+            let situation = match x["cause"].as_str().unwrap_or("") {
+                "left" => format!("left on {}", x["date"].as_str().unwrap_or("?")),
+                "not_in_afas" => "not in AFAS".into(),
+                "skipped" => format!("skipped: {}", x["reason"].as_str().unwrap_or("")),
+                "not_started" => format!("starts on {}", x["date"].as_str().unwrap_or("?")),
+                other => other.to_string(),
+            };
+            let reports: Vec<&str> = x["reports"]
+                .as_array()
+                .map(|a| a.iter().filter_map(Value::as_str).collect())
+                .unwrap_or_default();
+            let _ = write!(
+                b,
+                "<tr><td><code>{}</code></td><td>{}</td><td>{}</td></tr>",
+                esc(x["manager_id"].as_str().unwrap_or("?")),
+                esc(&situation),
+                esc(&reports.join(", "))
+            );
+        }
+        b.push_str("</tbody></table></section>");
+    }
+    if let Some(n) = r["notifications"].as_array().filter(|a| !a.is_empty()) {
+        b.push_str("<section><h2>Notifications after this run</h2><ul class=pv-notes>");
+        for x in n {
+            let _ = write!(
+                b,
+                "<li><b>{}</b>: {}</li>",
+                esc(x["channel"].as_str().unwrap_or("?")),
+                esc(x["detail"].as_str().unwrap_or(""))
+            );
+        }
+        b.push_str("</ul></section>");
     }
     list_section(
         &mut b,
@@ -2025,9 +2356,16 @@ fn page_run(app: &App, l: &Layers, error: Option<&str>) -> String {
                 3 => "warn",
                 _ => "bad",
             };
+            let link = if d.kind.starts_with("test run") {
+                "<p><a class=btn href=\"/preview?of=dry\">See account by account what it would do</a></p>"
+            } else if d.kind.starts_with("sync") {
+                "<p><a class=btn href=\"/preview?of=sync\">See account by account what was sent</a></p>"
+            } else {
+                ""
+            };
             let _ = write!(
                 b,
-                "<section class=\"verdict {tone}\"><p class=kicker>{} by {}, finished at {}, exit code {}</p><h2>{}</h2><pre>{}</pre></section>",
+                "<section class=\"verdict {tone}\"><p class=kicker>{} by {}, finished at {}, exit code {}</p><h2>{}</h2><pre>{}</pre>{link}</section>",
                 esc(&capital(&d.kind)),
                 esc(&d.user),
                 esc(&fmt_time(&d.finished)),
@@ -2035,6 +2373,7 @@ fn page_run(app: &App, l: &Layers, error: Option<&str>) -> String {
                 match d.exit_code {
                     0 => "Succeeded",
                     3 => "Succeeded, with points of attention",
+                    20 => "Stopped by a safety threshold",
                     _ => "Failed",
                 },
                 esc(&d.summary)
@@ -2048,7 +2387,7 @@ fn page_run(app: &App, l: &Layers, error: Option<&str>) -> String {
 
     let _ = write!(
         b,
-        "<section class=action><div><h2>Test run (dry-run)</h2><p>Fetches AFAS and shows what the sync would do. Nothing is sent to Microsoft and nothing changes.</p></div>\
+        "<section class=action><div><h2>Test run (dry-run)</h2><p>Fetches AFAS and shows what the sync would do, account by account, under Preview. Nothing is sent to Microsoft and nothing changes.</p></div>\
 <form method=post action=/run/dry><input type=hidden name=csrf value={csrf}>\
 <label>Pretend it is this date <small>optional, YYYY-MM-DD</small><input name=as_of placeholder=2026-12-01 inputmode=numeric{dis}></label>\
 <label class=check><input type=checkbox name=payload{dis}><span>Keep the data that would be sent (payload)<small>For download. Contains personal data.</small></span></label>\
@@ -2065,10 +2404,21 @@ fn page_run(app: &App, l: &Layers, error: Option<&str>) -> String {
         b,
         "<section class=\"action danger\"><div><h2>Run sync</h2><p>Sends all employees to Microsoft. Microsoft creates, updates or disables accounts. The safety thresholds still apply.</p></div>\
 <form method=post action=/run/apply><input type=hidden name=csrf value={csrf}>\
-<label class=check><input type=checkbox name=allow_mass_disable{dis}><span>Proceed if the disable threshold is hit<small>Only after checking the list in the test run.</small></span></label>\
-<label>Type <b>{CONFIRM_APPLY}</b> to confirm <small>or <b>{CONFIRM_MASS}</b> if you ticked proceed above</small><input name=confirm autocomplete=off{dis}></label>\
+<label class=check><input type=checkbox name=allow_mass_disable{dis}><span>Proceed if the disable threshold is hit<small>Only after checking the accounts marked Disable in the preview.</small></span></label>\
+<label class=check><input type=checkbox name=allow_mass_create{dis}><span>Proceed if many employees are new<small>A changed employee number would make everybody new and create second accounts: check the preview first.</small></span></label>\
+<label class=check><input type=checkbox name=allow_upn_changes{dis}><span>Proceed if many sign-in names change<small>Tell the people involved first.</small></span></label>\
+<label>Type <b>{CONFIRM_APPLY}</b> to confirm <small>or <b>{CONFIRM_MASS}</b> if you ticked a proceed box above</small><input name=confirm autocomplete=off{dis}></label>\
 <button class=danger{dis}>Run sync</button></form></section>"
     );
+    if l.config.notify.is_some() {
+        let n = l.config.notify.as_ref().map_or(0, |n| n.channels.len());
+        let _ = write!(
+            b,
+            "<section class=action><div><h2>Notifications</h2><p>{n} {} in the config file. A test message shows each channel what a real report looks like, with fictional people.</p></div>\
+<form method=post action=/notify/test><input type=hidden name=csrf value={csrf}><button class=quiet{dis}>Send a test message</button></form></section>",
+            if n == 1 { "channel" } else { "channels" }
+        );
+    }
     let _ = write!(
         b,
         "<section class=action><div><h2>Checks</h2><p>The health check goes through everything (settings, secrets, AFAS fields, Entra sign-in and permissions, certificates, TLS, schedule) and says how to fix what is wrong. It changes nothing. The other checks look at one part.</p></div>\
@@ -2733,7 +3083,7 @@ fn url_encode(s: &str) -> String {
 
 // ===================================================================== styling
 
-const CSS: &str = r#"
+pub const CSS: &str = r#"
 :root{--bg:#e9eef1;--surface:#fff;--ink:#132430;--muted:#566874;--line:#cfd8de;--accent:#0b6b70;--accent-ink:#fff;
 --ok:#1d7546;--warn:#975400;--bad:#b0261e;--s-active:#0b6b70;--s-pre:#6aa8ab;--s-leave:#8a96a0;--s-excl:#b0261e;--s-skip:#d5dde2;
 --font:"Seravek","Gill Sans Nova",Ubuntu,Calibri,"DejaVu Sans",source-sans-pro,sans-serif}
@@ -2822,6 +3172,7 @@ fn layout(app: &App, l: &Layers, active: &str, title: &str, body: &str) -> Strin
     nav.push_str("<ul>");
     item(&mut nav, "/", "overview", "Overview");
     item(&mut nav, "/run", "run", "Run");
+    item(&mut nav, "/preview", "preview", "Preview");
     nav.push_str("</ul><p class=group>Settings</p><ul>");
     for s in SECTIONS {
         item(&mut nav, &format!("/settings/{}", s.slug), s.slug, s.title);
@@ -2850,11 +3201,12 @@ fn layout(app: &App, l: &Layers, active: &str, title: &str, body: &str) -> Strin
     };
     format!(
         "<!doctype html><html lang=en><head><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\">\
-<title>{t} | AFAS to Entra</title><style>{CSS}</style></head><body><div class=shell>\
+<title>{t} | AFAS to Entra</title><style>{CSS}{pcss}</style></head><body><div class=shell>\
 <nav class=side aria-label=\"Main menu\"><p class=brand>AFAS to Entra</p><p class=pop>Staff category: {pop}</p>{nav}{ro}{signout}</nav>\
 <main><h1>{t}</h1>{body}</main></div></body></html>",
         t = esc(title),
         pop = esc(pop),
+        pcss = crate::preview::PREVIEW_CSS,
     )
 }
 
@@ -2980,6 +3332,11 @@ fn flash(query: &str) -> Option<(&'static str, &'static str)> {
         "1" => ("ok", "Saved. The change applies from the next run."),
         "none" => ("ok", "Nothing changed."),
         "reset" => ("ok", "Reset to the config file."),
+        "acked" => (
+            "ok",
+            "Marked as handled: no longer reported. Written to the audit log.",
+        ),
+        "notnotify" => ("bad", "There is no [notify] section in the config file."),
         _ => return None,
     })
 }

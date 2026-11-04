@@ -112,11 +112,16 @@ impl Env {
     fn state_exists(&self) -> bool {
         self.dir.path().join("state").join("state.json").exists()
     }
+    /// The report of the latest run (a sync and a test run each have their own file).
     fn report(&self) -> Value {
-        serde_json::from_slice(
-            &std::fs::read(self.dir.path().join("state").join("last-report.json")).unwrap(),
-        )
-        .unwrap()
+        let dir = self.dir.path().join("state");
+        let newest = ["last-report.json", "last-dry-run-report.json"]
+            .iter()
+            .map(|f| dir.join(f))
+            .filter(|p| p.exists())
+            .max_by_key(|p| std::fs::metadata(p).and_then(|m| m.modified()).unwrap())
+            .unwrap();
+        serde_json::from_slice(&std::fs::read(newest).unwrap()).unwrap()
     }
 }
 
@@ -128,6 +133,7 @@ fn opts(apply: bool) -> RunOptions {
         dump_payload: None,
         use_system_proxy: false,
         actor: "test".into(),
+        ..Default::default()
     }
 }
 

@@ -42,13 +42,15 @@ fn plan_with(
         today: d(today),
         previous: prev,
         allow_mass_disable: allow,
+        allow_mass_create: allow,
+        allow_upn_changes: allow,
     })
 }
 
 fn state_of(entries: &[(&str, bool)]) -> State {
     let records: BTreeMap<String, RecordState> = entries
         .iter()
-        .map(|(id, a)| ((*id).to_string(), RecordState { active: *a }))
+        .map(|(id, a)| ((*id).to_string(), RecordState::new(*a)))
         .collect();
     State {
         version: STATE_VERSION,
@@ -379,7 +381,7 @@ fn guard_drop_percent_boundary() {
     // state_of with duplicate keys gives 1 record; build explicitly:
     let mut prev = prev100;
     prev.records = (1..=100)
-        .map(|i| (format!("p{i}"), RecordState { active: true }))
+        .map(|i| (format!("p{i}"), RecordState::new(true)))
         .collect();
     prev.sent_total = 100;
     // 100 -> 90 = exactly 10%: allowed
@@ -462,9 +464,7 @@ fn guard_disables() {
     // already disabled in the previous run: does not count again
     let mut prev2 = prev.clone();
     for i in 1..=3 {
-        prev2
-            .records
-            .insert(i.to_string(), RecordState { active: false });
+        prev2.records.insert(i.to_string(), RecordState::new(false));
     }
     let p = plan_with(&c, &rows, "2026-10-30", Some(&prev2), false);
     assert_eq!(p.counts.new_disables, 0);
@@ -709,10 +709,19 @@ fn state_roundtrip_corruption_and_lock() {
     assert!(store.load().is_err());
     std::fs::write(
         dir.path().join("state.json"),
-        r#"{"version":2,"last_success_utc":"x","sent_total":0,"records":{}}"#,
+        r#"{"version":3,"last_success_utc":"x","sent_total":0,"records":{}}"#,
     )
     .unwrap();
     assert!(store.load().is_err());
+    // Version 1 (before 0.11) is read and upgraded.
+    std::fs::write(
+        dir.path().join("state.json"),
+        r#"{"version":1,"last_success_utc":"x","sent_total":1,"records":{"7":{"active":true}}}"#,
+    )
+    .unwrap();
+    let up = store.load().unwrap().unwrap();
+    assert_eq!(up.version, STATE_VERSION);
+    assert!(up.records["7"].active && up.records["7"].sent.is_empty());
     std::fs::write(
         dir.path().join("state.json"),
         r#"{"version":1,"last_success_utc":"x","sent_total":5,"records":{}}"#,

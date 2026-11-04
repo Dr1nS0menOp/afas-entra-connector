@@ -464,7 +464,7 @@ fn departing_employee_with_an_account_conflict_is_skipped_with_the_reason() {
         "7",
         Found::Conflict("employeeId 7 is on more than one Entra user".into()),
     )]);
-    let (items, notes) = leaver::plan(&cfg, &[p], &f, &ModuleState::default(), today());
+    let (items, notes, _pending) = leaver::plan(&cfg, &[p], &f, &ModuleState::default(), today());
     assert!(items.is_empty());
     assert!(
         notes
@@ -472,4 +472,136 @@ fn departing_employee_with_an_account_conflict_is_skipped_with_the_reason() {
             .any(|n| n.starts_with("7:") && n.contains("more than one")),
         "{notes:?}"
     );
+}
+
+// ------------------------------------------------------------------ leaver timing (0.11)
+
+fn leaver_cfg(extra: &str) -> afas_entra_sync::modules::settings::LeaverConfig {
+    toml::from_str(&format!(
+        "enabled = true\nclient_id = \"c0000000-0000-0000-0000-000000000003\"\ncertificate_pem = \"/c\"\nprivate_key_pem = \"/k\"\n{extra}"
+    ))
+    .unwrap()
+}
+
+fn leaver_left(id: &str, days_ago: u64) -> Person {
+    person(id, |s| {
+        s.active = false;
+        s.end_date = Some(minus(days_ago));
+    })
+}
+
+#[test]
+fn sessions_are_only_revoked_once_the_account_is_disabled() {
+    let cfg = leaver_cfg("");
+    let mut on = eu("u7", "7");
+    on.enabled = true;
+    let mut off = on.clone();
+    off.enabled = false;
+    let p = leaver_left("7", 1);
+    // The day after the end date, still enabled: wait (no attention, no exit 3).
+    let (items, notes, pending) = leaver::plan(
+        &cfg,
+        std::slice::from_ref(&p),
+        &found(&[("7", Found::User(on.clone()))]),
+        &ModuleState::default(),
+        today(),
+    );
+    assert!(items.is_empty() && notes.is_empty(), "{notes:?}");
+    assert!(pending[0].starts_with("7: waiting until the account is disabled"));
+    // Disabled: act.
+    let (items, _, pending) = leaver::plan(
+        &cfg,
+        std::slice::from_ref(&p),
+        &found(&[("7", Found::User(off))]),
+        &ModuleState::default(),
+        today(),
+    );
+    assert_eq!(items.len(), 1);
+    assert!(pending.is_empty());
+    // Two days after the end date and still enabled: provisioning did not disable it.
+    let p2 = leaver_left("7", 2);
+    let (items, notes, _) = leaver::plan(
+        &cfg,
+        &[p2],
+        &found(&[("7", Found::User(on))]),
+        &ModuleState::default(),
+        today(),
+    );
+    assert!(items.is_empty());
+    assert!(
+        notes[0].contains("still enabled in Entra 2 days after the end date"),
+        "{notes:?}"
+    );
+}
+
+#[test]
+fn automatic_reply_never_names_a_manager_that_is_not_known() {
+    let mut mgr = person("1", |s| s.display_name = "Mia Manager".into());
+    mgr.snap.email = Some("mia@x.nl".into());
+    let leaver_with = |m: Option<&str>| {
+        person("7", |s| {
+            s.active = false;
+            s.end_date = Some(minus(1));
+            s.display_name = "Jan".into();
+            s.manager_id = m.map(str::to_string);
+        })
+    };
+    let t = "auto_reply = \"{display_name} left. Ask {manager_name} ({manager_email}).\"\n";
+    let cfg = leaver_cfg(t);
+    let known = leaver::reply_text(&cfg, &leaver_with(Some("1")), Some(&mgr))
+        .unwrap()
+        .unwrap();
+    assert_eq!(known, "Jan left. Ask Mia Manager (mia@x.nl).");
+    // No manager, no alternative text: no reply, and why.
+    let none = leaver::reply_text(&cfg, &leaver_with(None), None).unwrap();
+    assert!(none.unwrap_err().contains("auto_reply_no_manager"));
+    // A manager without email counts as unknown.
+    let mut no_mail = mgr.clone();
+    no_mail.snap.email = None;
+    assert!(
+        leaver::reply_text(&cfg, &leaver_with(Some("1")), Some(&no_mail))
+            .unwrap()
+            .is_err()
+    );
+    // With the alternative text.
+    let cfg2 = leaver_cfg(&format!(
+        "{t}auto_reply_no_manager = \"{{display_name}} no longer works here.\"\n"
+    ));
+    assert_eq!(
+        leaver::reply_text(&cfg2, &leaver_with(None), None)
+            .unwrap()
+            .unwrap(),
+        "Jan no longer works here."
+    );
+    // A text without manager placeholders is used as it is.
+    let cfg3 = leaver_cfg("auto_reply = \"{display_name} left.\"\n");
+    assert_eq!(
+        leaver::reply_text(&cfg3, &leaver_with(None), None)
+            .unwrap()
+            .unwrap(),
+        "Jan left."
+    );
+    // In the plan: the sign-out still happens, the note says why there is no reply.
+    let mut off = eu("u7", "7");
+    off.enabled = false;
+    let (items, notes, _) = leaver::plan(
+        &cfg,
+        &[leaver_with(None)],
+        &found(&[("7", Found::User(off))]),
+        &ModuleState::default(),
+        today(),
+    );
+    assert_eq!(items.len(), 1);
+    assert!(items[0].reply.is_none());
+    assert!(notes[0].contains("no automatic reply"), "{notes:?}");
+}
+
+#[test]
+fn the_no_manager_text_cannot_name_a_manager() {
+    let bad: Result<afas_entra_sync::modules::settings::LeaverConfig, _> = toml::from_str(
+        "enabled = true\nclient_id = \"c0000000-0000-0000-0000-000000000003\"\ncertificate_pem = \"/c\"\nprivate_key_pem = \"/k\"\nauto_reply = \"x\"\nauto_reply_no_manager = \"ask {manager_name}\"\n",
+    );
+    let e = afas_entra_sync::modules::settings::validate(None, None, bad.as_ref().ok(), None)
+        .unwrap_err();
+    assert!(e.contains("auto_reply_no_manager"));
 }

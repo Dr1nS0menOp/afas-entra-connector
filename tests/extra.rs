@@ -56,6 +56,8 @@ fn data_for(c: &Config, r: serde_json::Map<String, Value>) -> Value {
         today: d("2026-10-31"),
         previous: None,
         allow_mass_disable: false,
+        allow_mass_create: false,
+        allow_upn_changes: false,
     });
     assert!(p.exclusions.is_empty(), "{:?}", p.exclusions);
     user_data(&p.records[0])

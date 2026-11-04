@@ -34,6 +34,40 @@ pub struct Config {
     pub leaver: Option<crate::modules::settings::LeaverConfig>,
     #[serde(default)]
     pub webhook: Option<crate::modules::settings::WebhookConfig>,
+    /// Test-run preview: where new accounts go, and an optional read-only look-up in Entra.
+    #[serde(default)]
+    pub preview: PreviewConfig,
+    /// Reports by email, Microsoft Teams, Slack or a webhook.
+    #[serde(default)]
+    pub notify: Option<crate::notify::NotifyConfig>,
+}
+
+/// `[preview]`: how a test run explains what it would do.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct PreviewConfig {
+    /// Distinguished name of the OU the provisioning app creates new accounts in (the
+    /// tool cannot read it from Microsoft), e.g. `OU=New hires,OU=Staff,DC=example,DC=com`.
+    /// Only used to show where new accounts end up.
+    #[serde(default)]
+    pub new_accounts_ou: Option<String>,
+    /// App registration (certificate, `User.Read.All`) for a read-only look-up in Entra, so
+    /// the test run can say per account: create, update or no change, and where it lives.
+    /// Without it, the app registration of an enabled module is used, else the values of
+    /// the last successful run.
+    #[serde(default)]
+    pub client_id: Option<String>,
+    #[serde(default)]
+    pub certificate_pem: Option<PathBuf>,
+    #[serde(default)]
+    pub private_key_pem: Option<PathBuf>,
+    /// `false`: never look up in Entra, even when a module identity is available.
+    #[serde(default = "default_true")]
+    pub entra_lookup: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// Lowest TLS version that is accepted.
@@ -192,8 +226,17 @@ pub const LOCKED_KEYS: &[&str] = &[
     "entra.private_key_pem",
     "entra.authority",
     "entra.graph_base",
+    // Where uploads go: another job would provision the same people somewhere else.
+    "entra.service_principal_id",
+    "entra.job_id",
+    // Which sign-in domains may be created at all.
+    "policy.allowed_upn_domains",
     "state",
     "tls",
+    // Who receives reports and where they are posted (the URLs act as passwords).
+    "notify",
+    // Who the test-run preview signs in as.
+    "preview",
     // Modules: who they sign in as, which groups they may touch, where mail and events go.
     "roles.client_id",
     "roles.certificate_pem",
@@ -427,6 +470,22 @@ pub struct PolicyConfig {
     pub max_invalid_percent: u32,
     /// Maximum API calls per run (protects the daily limit).
     pub max_calls_per_run: u32,
+    /// Maximum records that were not in the last successful run. More points to a changed
+    /// employee number (mapping or staff category prefix): Microsoft would create a second
+    /// account for everybody.
+    #[serde(default = "default_max_new")]
+    pub max_new_per_run: u32,
+    /// Maximum sign-in names (UPN) that change in one run. More points to a changed UPN
+    /// rule in AFAS; a new sign-in name affects SSO, OneDrive links and the people themselves.
+    #[serde(default = "default_max_upn_changes")]
+    pub max_upn_changes_per_run: u32,
+}
+
+fn default_max_new() -> u32 {
+    25
+}
+fn default_max_upn_changes() -> u32 {
+    5
 }
 
 #[derive(Debug, Clone, Deserialize, serde::Serialize)]
@@ -729,6 +788,38 @@ impl Config {
         if self.policy.max_calls_per_run == 0 {
             return err("policy.max_calls_per_run must be > 0");
         }
+        if self.policy.max_new_per_run == 0 || self.policy.max_upn_changes_per_run == 0 {
+            return err(
+                "policy.max_new_per_run and policy.max_upn_changes_per_run must be at least 1",
+            );
+        }
+
+        // Preview
+        let pv = &self.preview;
+        if let Some(ou) = &pv.new_accounts_ou
+            && crate::preview::canonical_name(ou).is_none()
+        {
+            return err(
+                "preview.new_accounts_ou must be a distinguished name such as OU=New hires,DC=example,DC=com",
+            );
+        }
+        match (&pv.client_id, &pv.certificate_pem, &pv.private_key_pem) {
+            (None, None, None) => {}
+            (Some(c), Some(_), Some(_)) if is_guid(c) => {}
+            (Some(c), Some(_), Some(_)) => {
+                return Err(AppError::Config(format!(
+                    "preview.client_id '{c}' is not a GUID"
+                )));
+            }
+            _ => {
+                return err(
+                    "preview: client_id, certificate_pem and private_key_pem go together (all three or none)",
+                );
+            }
+        }
+        if let Some(n) = &self.notify {
+            n.validate().map_err(AppError::Config)?;
+        }
 
         // Upload
         if !(1..=50).contains(&self.upload.batch_size) {
@@ -772,6 +863,40 @@ impl Config {
             || self.joiner.as_ref().is_some_and(|m| m.enabled)
             || self.leaver.as_ref().is_some_and(|m| m.enabled)
             || self.webhook.as_ref().is_some_and(|m| m.enabled)
+    }
+
+    /// The app registration the test-run preview looks up Entra with: its own
+    /// `[preview]` identity, else that of an enabled module (all have `User.Read.All`).
+    /// `None` when there is none, or `preview.entra_lookup = false`.
+    pub fn preview_identity(
+        &self,
+    ) -> Option<(&'static str, crate::modules::settings::ModuleIdentity)> {
+        if !self.preview.entra_lookup {
+            return None;
+        }
+        let p = &self.preview;
+        if let (Some(c), Some(cert), Some(key)) =
+            (&p.client_id, &p.certificate_pem, &p.private_key_pem)
+        {
+            return Some((
+                "preview",
+                crate::modules::settings::ModuleIdentity {
+                    client_id: c.clone(),
+                    certificate_pem: cert.clone(),
+                    private_key_pem: key.clone(),
+                },
+            ));
+        }
+        if let Some(r) = self.roles.as_ref().filter(|m| m.enabled) {
+            return Some(("roles", r.identity()));
+        }
+        if let Some(l) = self.leaver.as_ref().filter(|m| m.enabled) {
+            return Some(("leaver", l.identity()));
+        }
+        if let Some(j) = self.joiner.as_ref().filter(|m| m.enabled) {
+            return Some(("joiner", j.identity()));
+        }
+        None
     }
 
     pub fn tz(&self) -> chrono_tz::Tz {

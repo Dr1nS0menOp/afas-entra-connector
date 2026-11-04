@@ -62,6 +62,8 @@ max_drop_percent = 10        # drop vs. the last successful run larger than this
 max_disables_per_run = 10    # more new disables = stop (to proceed: --allow-mass-disable)
 max_invalid_percent = 5      # more invalid records = stop (points to a mapping error)
 max_calls_per_run = 200      # Entra P1 allows 2,000 calls per 24 hours
+max_new_per_run = 25         # more employees new since the last run = stop (changed employee number? --allow-mass-create)
+max_upn_changes_per_run = 5  # more changed sign-in names = stop (changed UPN rule? --allow-upn-changes)
 
 [upload]
 batch_size = 50              # Microsoft maximum
@@ -90,6 +92,67 @@ post_quantum = "prefer"      # "prefer" (default) or "require" (refuses servers 
 # Admin GUI. Off by default; can only be turned on here.
 [gui]
 enabled = false
+
+# Test run (dry-run) preview: account by account what would happen, and where.
+# Optional; without it the test run compares with what the last sync sent.
+# [preview]
+# new_accounts_ou = "OU=New hires,OU=Staff,DC=example,DC=com"   # the OU of the provisioning app (for display)
+# Read-only look-up in Entra (User.Read.All): shows create / update / no change per account,
+# the OU of existing accounts, and accounts that would be created twice. Without these three
+# keys the app registration of an enabled module is used. Create: module-setup preview
+# client_id = "00000000-0000-0000-0000-000000000000"
+# certificate_pem = "/etc/afas-entra-sync/preview-cert.pem"
+# private_key_pem = "/etc/afas-entra-sync/preview-key.pem"
+
+# ---------------------------------------------------------------------------------------
+# Notifications: failed runs and everything people have to decide or do (a manager who
+# left, employees missing from AFAS, data errors, ...), each explained, with the full log.
+# A failure is sent once (again after repeat_hours); points when something is new; a
+# "works again" / "all clear" once. See docs/MODULES.md, Notifications.
+# ---------------------------------------------------------------------------------------
+# [notify]
+# on = ["failure", "attention", "recovered"]   # also "success" for every successful run
+# repeat_hours = 24                             # unchanged open points again after this; 0 = never
+# personal_data = "numbers"                     # or "names": also names and sign-in names
+# gui_url = "https://afas-sync.example.com"     # link in messages
+#
+# Email goes out through Microsoft Graph (Mail.Send, scoped to the sender with Exchange
+# RBAC for Applications). Create the certificate: module-setup notify
+# [notify.email]
+# client_id = "00000000-0000-0000-0000-000000000000"
+# certificate_pem = "/etc/afas-entra-sync/notify-cert.pem"
+# private_key_pem = "/etc/afas-entra-sync/notify-key.pem"
+# sender = "afas-sync@example.com"
+#
+# [[notify.channel]]
+# kind = "email"
+# name = "identity-team"
+# to = ["identity@example.com"]
+# personal_data = "names"                       # internal mail: names are fine
+#
+# [[notify.channel]]
+# kind = "email"
+# name = "hr"
+# to = ["hr@example.com"]
+# audience = ["hr"]                             # only what HR fixes in AFAS (failures always go)
+# on = ["attention"]
+# personal_data = "names"
+#
+# [[notify.channel]]
+# kind = "teams"                                # Workflows "When a Teams webhook request is received"
+# name = "teams-it"
+# url_file = "/etc/afas-entra-sync/teams.url"   # the URL works as a password: file 0600, not here
+#
+# [[notify.channel]]
+# kind = "slack"                                # incoming webhook, https://hooks.slack.com/…
+# name = "slack-it"
+# url_env = "AFAS_SYNC_SLACK_URL"
+#
+# [[notify.channel]]
+# kind = "webhook"                              # signed JSON with everything, e.g. for an ITSM tool
+# name = "itsm"
+# url = "https://itsm.example.com/hooks/afas-sync"
+# secret_file = "/etc/afas-entra-sync/notify-hook.secret"   # HMAC-SHA256, at least 16 characters
 
 # ---------------------------------------------------------------------------------------
 # Optional modules. They run after a successful provisioning upload, each with its own
@@ -156,6 +219,7 @@ enabled = false
 # private_key_pem = "/etc/afas-entra-sync/leaver-key.pem"
 # revoke_sessions = true
 # auto_reply = "{display_name} no longer works here. Please contact {manager_name} ({manager_email})."
+# auto_reply_no_manager = "{display_name} no longer works here."   # when no manager is known
 # auto_reply_external = false
 # grace_days = 7
 # max_per_run = 10

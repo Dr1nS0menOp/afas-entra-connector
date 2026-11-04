@@ -35,7 +35,12 @@ apply to it.
 | A retried request does something twice | A POST (create a pass, send a mail) is never repeated after a network error or 5xx; when the outcome of creating a pass is unknown, any pass that appeared is removed |
 | Temporary Access Pass leaks | Never logged or stored; valid only from the start date for a limited time; deleted again when the mail fails; `Mail.Send` scoped to one sender mailbox with Exchange RBAC for Applications |
 | Forged or replayed webhook calls to your ITSM | HMAC-SHA256 over timestamp and body, secret at least 16 characters from an environment variable or a 0600 file, unique delivery id; receivers check the signature and age |
-| Spreadsheet formula injection through the access log export | CSV cells starting with `=`, `+`, `-`, `@` are prefixed |
+| Spreadsheet formula injection through the access log export | CSV cells starting with `=`, `+`, `-`, `@` are prefixed (also in the preview CSV) |
+| Notification channel URL leaks (anyone with a Teams or Slack webhook URL can post) | Only from an environment variable or a 0600 file, never in the config or the GUI; never in logs or error messages; Slack only to `hooks.slack.com`; HTTPS only; no redirects followed |
+| Personal data in chat tools | Notifications carry employee numbers only unless a channel sets `personal_data = "names"`; quoted values and addresses in reasons and log lines are hidden |
+| Forged notifications to your ITSM | The notification webhook is signed like the webhook module (HMAC-SHA256 over timestamp and body) |
+| A changed field mapping creates or renames everybody | Thresholds on new employee numbers (`max_new_per_run`) and changed sign-in names (`max_upn_changes_per_run`), next to the disable threshold |
+| Preview HTML injection (names from AFAS, values from Entra) | Every value is HTML-escaped; the page has no scripts; it is written 0600 |
 | Tampered binary during deployment | `install.sh` and Ansible verify the SHA-256 checksum before installing |
 | Installer leaves a half-configured host | Every answer is validated and the config is built and checked before anything is written; files are written atomically with final permissions |
 
@@ -133,6 +138,8 @@ Each optional module has its own app registration with certificate auth (see
 | joiner (new hires) | `UserAuthMethod-TAP.ReadWrite.All`, `User.Read.All`; `Mail.Send` **not** in Entra but through Exchange RBAC for Applications, scoped to the sender mailbox |
 | leaver (departing employees) | `User.RevokeSessions.All`, `User.Read.All`, `MailboxSettings.ReadWrite` (optionally scoped with Exchange RBAC for Applications) |
 | webhook | none |
+| preview (optional; test runs only) | `User.Read.All` (read-only); or reuse a module's app registration |
+| notify (email) | none in Entra; `Mail.Send` through Exchange RBAC for Applications, scoped to the sender mailbox |
 
 `GroupMember.ReadWrite.All` can change members of any non-role-assignable group in the
 tenant; the prefix check is enforced by the tool, not by Entra. Protect that certificate

@@ -97,6 +97,8 @@ pub fn run(cfg: &Config, config_path: &Path, o: &Options<'_>) -> Vec<Check> {
     afas(cfg, o, &mut out);
     provisioning(cfg, o, &mut out);
     modules(cfg, o, &mut out);
+    preview(cfg, o, &mut out);
+    notifications(cfg, o, &mut out);
     certificates(cfg, o, &mut out);
     if o.tls {
         tls(cfg, &mut out);
@@ -539,7 +541,8 @@ pub fn afas_fields(
 
 // ------------------------------------------------------------------ Entra and Graph
 
-fn entra_fix(msg: &str) -> Option<String> {
+/// What to do about a sign-in error, from the AADSTS code in it.
+pub fn entra_fix(msg: &str) -> Option<String> {
     let s = if msg.contains("AADSTS700027") {
         "Entra does not know this certificate: upload the certificate file to the app registration (Certificates & secrets)"
     } else if msg.contains("AADSTS700016") {
@@ -628,6 +631,7 @@ fn modules(cfg: &Config, o: &Options<'_>, out: &mut Out) {
         sleep: o.sleep,
         state_dir: &cfg.state.dir,
         actor: "doctor",
+        users: Default::default(),
     };
     if let Some(r) = cfg.roles.as_ref().filter(|r| r.enabled) {
         const A: &str = "Module: roles and licences";
@@ -802,6 +806,125 @@ fn modules(cfg: &Config, o: &Options<'_>, out: &mut Out) {
             rows
         });
         report_module(out, A, res);
+    }
+}
+
+/// The test-run preview: where new accounts go, and whether the look-up in Entra works.
+fn preview(cfg: &Config, o: &Options<'_>, out: &mut Out) {
+    const A: &str = "Test-run preview";
+    let target = crate::preview::target(cfg);
+    match (&cfg.preview.new_accounts_ou, target) {
+        (_, "Entra ID") => out.ok(A, "New accounts", "created in Entra ID (cloud only)"),
+        (Some(ou), _) => out.ok(
+            A,
+            "New accounts",
+            format!(
+                "shown as {}",
+                crate::preview::canonical_name(ou).unwrap_or_else(|| ou.clone())
+            ),
+        ),
+        (None, _) => out.add(
+            A,
+            "New accounts",
+            Level::Info,
+            "the preview says 'the target OU of the provisioning app'",
+            Some("set preview.new_accounts_ou to the OU of the provisioning app to show the real place".into()),
+        ),
+    }
+    let Some((who, id)) = cfg.preview_identity() else {
+        out.add(
+            A,
+            "Look-up in Entra",
+            Level::Info,
+            "off: test runs compare with the last successful sync",
+            Some("add a [preview] app registration with User.Read.All (sudo afas-entra-sync module-setup preview) to see per account whether it exists and where".into()),
+        );
+        return;
+    };
+    let res = crate::modules::graph_as(cfg, &id, o.use_system_proxy, o.sleep, |g| {
+        g.get("users?$top=1&$select=id,onPremisesDistinguishedName")
+    });
+    match res {
+        Err(e) => out.add(A, "Look-up in Entra", Level::Fail, e.clone(), entra_fix(&e)),
+        Ok(Ok(_)) => out.ok(
+            A,
+            "Look-up in Entra",
+            format!("reads users with the {who} app registration"),
+        ),
+        Ok(Err(e)) => {
+            let (l, d, f) = graph_problem(&e, "User.Read.All", who);
+            out.add(A, "Look-up in Entra", l, d, f);
+        }
+    }
+}
+
+/// Notifications: every channel's address or secret is readable, and email can sign in.
+/// Sends nothing (use notify-test for that).
+fn notifications(cfg: &Config, o: &Options<'_>, out: &mut Out) {
+    const A: &str = "Notifications";
+    let Some(n) = cfg.notify.as_ref() else {
+        out.add(
+            A,
+            "Channels",
+            Level::Info,
+            "none: failures and points of attention are only in the report and exit code",
+            Some("add [notify] to get them by email, Teams, Slack or a webhook (see the example config)".into()),
+        );
+        return;
+    };
+    if !n.enabled {
+        out.add(
+            A,
+            "Channels",
+            Level::Warn,
+            "notify.enabled = false: nothing is sent",
+            None,
+        );
+        return;
+    }
+    for (i, c) in n.channels.iter().enumerate().filter(|(_, c)| c.enabled) {
+        let id = c.id(i);
+        let kind = match c.kind {
+            crate::notify::ChannelKind::Email => "email",
+            crate::notify::ChannelKind::Teams => "Teams",
+            crate::notify::ChannelKind::Slack => "Slack",
+            crate::notify::ChannelKind::Webhook => "webhook",
+        };
+        if c.kind == crate::notify::ChannelKind::Email {
+            out.ok(
+                A,
+                format!("Channel {id}"),
+                format!("{kind} to {}", c.to.join(", ")),
+            );
+            continue;
+        }
+        match crate::notify::channel_url(c) {
+            Ok(_) => out.ok(
+                A,
+                format!("Channel {id}"),
+                format!("{kind}: address readable"),
+            ),
+            Err(e) => out.add(
+                A,
+                format!("Channel {id}"),
+                Level::Fail,
+                e,
+                Some("check url_env / url_file (mode 0600, owned by the service user)".into()),
+            ),
+        }
+    }
+    if n.email.is_some() {
+        match crate::notify::check_email_sign_in(cfg, o.use_system_proxy, o.sleep) {
+            Ok(()) => out.ok(A, "Email sign-in", "the email app registration signs in"),
+            Err(e) => out.add(A, "Email sign-in", Level::Fail, e.clone(), entra_fix(&e)),
+        }
+        out.add(
+            A,
+            "Sending mail",
+            Level::Info,
+            "Mail.Send is only tested by a real message: run afas-entra-sync notify-test",
+            None,
+        );
     }
 }
 

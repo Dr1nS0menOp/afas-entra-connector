@@ -154,6 +154,17 @@ pub fn certificates(cfg: &Config, now: DateTime<Utc>) -> Vec<CertStatus> {
     if let Some(m) = cfg.leaver.as_ref().filter(|m| m.enabled) {
         list.push(("departing employees".into(), m.identity().certificate_pem));
     }
+    if let Some(e) = cfg
+        .notify
+        .as_ref()
+        .filter(|n| n.enabled)
+        .and_then(|n| n.email.as_ref())
+    {
+        list.push(("notifications".into(), e.certificate_pem.clone()));
+    }
+    if let Some(c) = &cfg.preview.certificate_pem {
+        list.push(("preview".into(), c.clone()));
+    }
     list.into_iter()
         .map(|(app, path)| {
             let r = std::fs::read(&path)
@@ -175,6 +186,8 @@ pub fn renew_command(app: &str) -> &'static str {
         "provisioning" => "sudo afas-entra-sync install --renew-cert",
         "roles" => "sudo afas-entra-sync module-setup roles --renew",
         "new hires" => "sudo afas-entra-sync module-setup joiner --renew",
+        "notifications" => "sudo afas-entra-sync module-setup notify --renew",
+        "preview" => "sudo afas-entra-sync module-setup preview --renew",
         _ => "sudo afas-entra-sync module-setup leaver --renew",
     }
 }
@@ -231,6 +244,13 @@ pub fn sync_summary(r: &Report) -> String {
             c.sent_inactive_prehire
         );
         let _ = writeln!(s, "  {:>6}  departed, disabled", c.sent_inactive_leaver);
+        if c.sent_inactive_outside_window > 0 {
+            let _ = writeln!(
+                s,
+                "  {:>6}  outside the date window but active last run: disabled once more",
+                c.sent_inactive_outside_window
+            );
+        }
         let _ = writeln!(s, "  {:>6}  skipped (data errors)", c.excluded_errors);
         let _ = writeln!(
             s,
@@ -259,10 +279,58 @@ pub fn sync_summary(r: &Report) -> String {
             )
         }),
     );
+    if r.missing.is_empty() {
+        list(
+            &mut s,
+            "Missing from AFAS while active: not disabled, check them",
+            r.disappeared_while_active.iter().cloned(),
+        );
+    } else {
+        list(
+            &mut s,
+            "Missing from AFAS while active: not disabled, reported until handled (missing ack)",
+            r.missing.iter().map(|m| {
+                format!(
+                    "{}  since {}{}",
+                    m.employee_id,
+                    m.since,
+                    m.excluded_because
+                        .as_deref()
+                        .map(|e| format!(", skipped: {e}"))
+                        .unwrap_or_default()
+                )
+            }),
+        );
+    }
     list(
         &mut s,
-        "Missing from AFAS while active: not disabled, check them",
-        r.disappeared_while_active.iter().cloned(),
+        "Sign-in names (UPN) that change",
+        r.upn_changes
+            .iter()
+            .map(|u| format!("{}  {} → {}", u.employee_id, u.from, u.to)),
+    );
+    list(
+        &mut s,
+        "Managers who left or cannot be linked: ask HR to set a new manager",
+        r.manager_gaps.iter().map(|g| {
+            let cause = match g.cause {
+                crate::plan::ManagerCause::Left => format!(
+                    "left on {}",
+                    g.date.map(|d| d.to_string()).unwrap_or_default()
+                ),
+                crate::plan::ManagerCause::NotInAfas => "not in AFAS".into(),
+                crate::plan::ManagerCause::Skipped => "skipped (data error)".into(),
+                crate::plan::ManagerCause::NotStarted => format!(
+                    "starts on {}",
+                    g.date.map(|d| d.to_string()).unwrap_or_default()
+                ),
+            };
+            format!(
+                "{}  {cause}; still manager of {}",
+                g.manager_id,
+                g.reports.join(", ")
+            )
+        }),
     );
     list(
         &mut s,
@@ -307,6 +375,21 @@ pub fn sync_summary(r: &Report) -> String {
         }
     }
     list(&mut s, "Notices", r.notices.iter().cloned());
+    list(
+        &mut s,
+        "Notifications",
+        r.notifications.iter().map(|d| {
+            format!(
+                "{}: {}",
+                d.channel,
+                if d.ok {
+                    d.detail.clone()
+                } else {
+                    format!("FAILED, {}", d.detail)
+                }
+            )
+        }),
+    );
     let _ = writeln!(s, "\nResult: {} (exit {})", r.result, r.exit_code);
     let ok = matches!(
         r.exit_code,
@@ -320,7 +403,9 @@ pub fn sync_summary(r: &Report) -> String {
     }
     let _ = writeln!(
         s,
-        "All details: last-report.json in the state directory, or --json."
+        "All details: {} in the state directory (log: {}), or --json.",
+        crate::state::report_file(r.mode == "apply"),
+        crate::state::log_file(r.mode == "apply")
     );
     s
 }
@@ -413,8 +498,14 @@ mod tests {
                 .collect(),
             warnings: vec![],
             disappeared_while_active: vec![],
+            missing: vec![],
+            upn_changes: vec![],
+            manager_gaps: vec![],
             upload: None,
             modules: None,
+            preview: None,
+            notifications: vec![],
+            log_file: None,
             notices: vec!["certificate expires".into()],
             result: "ok".into(),
             exit_code,

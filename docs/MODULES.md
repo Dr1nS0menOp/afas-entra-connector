@@ -191,8 +191,9 @@ in for the first time and register MFA or a passkey, without a password ever bei
   is removed; the next run tries again.
 - **Never replaced.** An account can have only one code. If the new hire already has a
   usable or future one (for example from the service desk), the module leaves it, sends
-  nothing and reports it in `notes`; delete it in Entra to have a new one sent. An expired
-  or already used code is removed first.
+  nothing and reports it in `notes` once per start date (after that only as `pending`, so
+  it does not raise exit 3 every hour); delete it in Entra to have a new one sent. An
+  expired or already used code is removed first.
 - **Never to a manager who has left.** If the manager in AFAS is no longer active, the
   code goes to `fixed_address` (or is not sent, without one): a departed manager's mailbox
   may be shared with others by then.
@@ -225,16 +226,26 @@ client_id = "..."
 certificate_pem = "/etc/afas-entra-sync/leaver-cert.pem"
 private_key_pem = "/etc/afas-entra-sync/leaver-key.pem"
 auto_reply = "{display_name} no longer works here. Please contact {manager_name} ({manager_email})."
+auto_reply_no_manager = "{display_name} no longer works here."
 ```
 
-From the day after the end date (and up to `grace_days` later), once per end date:
+From the day after the end date (and up to `grace_days` later), once per end date, **as
+soon as the account is disabled in Entra**:
 
 1. **Sign out everywhere** (`revokeSignInSessions`, on by default). The account itself is
    disabled by provisioning; revoking makes refresh tokens on phones and laptops invalid
-   too.
+   too. Microsoft's order is disable first, then revoke: revoked while the account is still
+   enabled, the person could simply sign in again. The disable takes provisioning plus
+   Connect Sync (up to about 90 minutes), so the first run after midnight usually reports
+   the departing employee as `pending` (waiting, no exit 3) and the next run acts. Still
+   enabled two days after the end date: a note (exit 3, and a notification), because
+   provisioning has then not disabled the account. Check `check-logs` and the account in AD.
 2. **Automatic reply**, when `auto_reply` is set. Placeholders `{display_name}`,
    `{manager_name}`, `{manager_email}`. Internal only, unless `auto_reply_external = true`.
-   An account without a mailbox is not an error.
+   An account without a mailbox is not an error. When the text names the manager but no
+   manager with an email address is known, `auto_reply_no_manager` is used instead
+   (placeholder `{display_name}`); without it, no reply is set and a note says why. Nobody
+   gets "Please contact  ()".
 
 Removal from groups (and so licences) is done by the roles module, after
 `keep_leavers_days`. The module needs `policy.leaver_lookback_days` of at least 1, since it
@@ -315,6 +326,130 @@ def verify(secret: bytes, headers, body: bytes) -> bool:
 The secret comes from `secret_env` or `secret_file` (mode 0600), at least 16 characters.
 Generate one with `openssl rand -hex 32`. The webhook uses the same TLS policy as the rest
 (`[tls]`).
+
+## Test-run preview: read-only look-up
+
+Not a module, but set up the same way. With it, a test run compares with Entra itself:
+whether each account exists, in which OU it is, which values change, and which accounts
+would be created twice. Permission: `User.Read.All` (application). Without `[preview]`, the
+app registration of an enabled module (roles, leaver, joiner) is used; all have that
+permission. `entra_lookup = false` turns the look-up off.
+
+```bash
+sudo afas-entra-sync module-setup preview   # certificate + the steps in Entra
+```
+
+```toml
+[preview]
+new_accounts_ou = "OU=New hires,OU=Staff,DC=example,DC=com"   # where the provisioning app creates accounts
+client_id = "..."
+certificate_pem = "/etc/afas-entra-sync/preview-cert.pem"
+private_key_pem = "/etc/afas-entra-sync/preview-key.pem"
+```
+
+The look-up only runs in test runs (a sync must not depend on an extra sign-in) and never
+makes a run fail: when it does not work, the preview says why and compares with the last
+sync instead. The location comes from `onPremisesDistinguishedName`, so only accounts that
+Connect Sync brings from AD have one; cloud-only accounts show as "Entra ID (cloud only)".
+
+## Notifications
+
+Failed runs and the points people have to act on, by email, Microsoft Teams, Slack or a
+webhook. See also the README, [Notifications](../README.md#notifications).
+
+```toml
+[notify]
+on = ["failure", "attention", "recovered"]   # "success" too for a log channel
+repeat_hours = 24
+gui_url = "https://afas-sync.example.com"
+
+[notify.email]
+client_id = "..."
+certificate_pem = "/etc/afas-entra-sync/notify-cert.pem"
+private_key_pem = "/etc/afas-entra-sync/notify-key.pem"
+sender = "afas-sync@example.com"
+
+[[notify.channel]]
+kind = "email"
+name = "identity-team"
+to = ["identity@example.com"]
+personal_data = "names"
+
+[[notify.channel]]
+kind = "teams"
+name = "teams-it"
+url_file = "/etc/afas-entra-sync/teams.url"
+```
+
+**Channels.** Each `[[notify.channel]]` has a `kind`, an optional `name` (shown in the
+message and used to remember what was sent), and optionally `audience` (`["it"]`, `["hr"]`;
+failures always go), `on` and `personal_data`.
+
+| Kind | Needs | Message |
+| --- | --- | --- |
+| `email` | `to`, and `[notify.email]` | HTML mail with every point and table, the full log (`run.log`) and, with names allowed, the report (`report.json`) attached |
+| `teams` | `url_env` or `url_file` | Adaptive Card 1.5: verdict in colour, facts, every point with its table, the log behind *Show the log*, a button to the GUI. Kept under Teams' 28 KB limit |
+| `slack` | `url_env` or `url_file` (`https://hooks.slack.com/…`) | Block Kit: verdict, facts, every point, tables as aligned text, the last log lines for failures |
+| `webhook` | `url` (or `url_env`/`url_file`) and `secret_env`/`secret_file` | JSON (`schema: afas-entra-sync/notification/v1`): every point with all rows, the full log, the report; signed like the webhook module (`X-AfasEntraSync-Signature: sha256=<HMAC of "<timestamp>.<body>">`, event `notification.<failure|attention|recovered|all_clear|success|test>`) |
+
+Teams and Slack URLs work as passwords: anyone who has one can post in the channel. They are
+therefore only read from an environment variable or a file (mode 0600), never from the
+config, and never appear in logs or error messages.
+
+**Teams.** Create a workflow from the template *Post to a channel when a webhook request is
+received* (Teams → the channel → … → Workflows), copy the URL into the file. The classic
+"Incoming Webhook" connector takes the same message.
+
+**Email.** The mail is sent through Microsoft Graph by a separate app registration. As with
+the joiner module, do not grant `Mail.Send` in Entra; scope it to the sender with Exchange
+RBAC for Applications:
+
+```bash
+sudo afas-entra-sync module-setup notify
+```
+
+```powershell
+Connect-ExchangeOnline
+New-ServicePrincipal -AppId <client id> -ObjectId <enterprise app object id> -DisplayName "afas-entra-sync-notify"
+New-ManagementScope -Name "afas-entra-sync notify sender" `
+  -RecipientRestrictionFilter "PrimarySmtpAddress -eq 'afas-sync@example.com'"
+New-ManagementRoleAssignment -App <client id> -Role "Application Mail.Send" `
+  -CustomResourceScope "afas-entra-sync notify sender"
+Test-ServicePrincipalAuthorization -Identity <client id> -Resource afas-sync@example.com
+```
+
+The joiner module and the notifications may share one app registration and sender if you
+prefer; set the same values in both sections.
+
+**When.** After every sync and every `check-logs`, per channel:
+
+| Situation | Sent |
+| --- | --- |
+| The run failed or stopped on a safety threshold | Once; again when the cause changes, or after `repeat_hours` |
+| The same failure keeps happening | Nothing (the message says how many runs in a row) |
+| Points of attention, something new | The whole list, new points marked NEW |
+| The same points, still open | Again after `repeat_hours` (0 = never) |
+| Fine again after a failure | "The sync works again", with what was wrong and since when |
+| All points resolved | "All points of attention are resolved" |
+| Every successful run | Only with `on = ["success"]` |
+
+What was sent is kept per channel in `notify-state.json` (hashes, no employee numbers),
+separately for syncs and log checks. A test run only notifies with `sync --notify`, and
+then sends everything without remembering anything. A channel that cannot be reached is
+logged and reported under `notifications` in the report, and tried again on the next run;
+it never changes the exit code.
+
+**Personal data.** By default only employee numbers: HR looks them up in AFAS. Quoted values
+in reasons and in log lines (a rejected UPN, for example) are hidden as `'…'`, addresses as
+`…@…`, and the report is not attached. `personal_data = "names"` (per channel or for all)
+adds names, sign-in names and the report. Use it for internal mail; think twice for Slack.
+
+**Try it.** `afas-entra-sync notify-test` sends an example with fictional people to every
+channel (`--channel <name>` for one); `notify-test --render <dir>` writes the examples to
+files without sending (open the email in a browser, paste the Teams JSON into the Adaptive
+Cards designer and the Slack JSON into the Block Kit Builder). In the GUI: *Run →
+Notifications → Send a test message*. `doctor` checks that every channel's address is
+readable and that the email app signs in.
 
 ## Access log and reports
 

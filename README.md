@@ -30,6 +30,13 @@ the optional modules in [docs/MODULES.md](docs/MODULES.md), changes in [CHANGELO
 and [docs/security](docs/security/README.md) (OWASP ASVS 5.0 Level 2 self-assessment, OpenSSF), Ansible deployment in
 [deploy/ansible](deploy/ansible/README.md).
 
+**Before the first real run:** a test run shows, account by account, what would happen and
+where (create, enable, disable, update with old → new, accounts that would be created
+twice), in the terminal, the GUI or as a page in your browser: see
+[Test run preview](#test-run-preview). **While it runs:** failures and everything people
+have to decide reach them by email, Teams, Slack or a webhook, explained in plain language
+with the full log: see [Notifications](#notifications).
+
 ## Optional modules: new hires, job changes and departing employees
 
 Each module is off until configured, signs in with its own app registration, plans first
@@ -84,10 +91,14 @@ always safer than sending a partial or wrong record. Therefore:
 | Same employee number, different data | That employee is skipped, exit 3 |
 | Same employee number, identical row | Merged, no problem |
 | Same UPN for two employees | Both skipped, exit 3 |
-| Manager is not in the upload | Record sent, manager not; warning |
-| Active last run, now missing from AFAS | **Not** disabled; reported, exit 3 |
+| Manager is not in the upload | Record sent, manager not; warning; grouped per manager under `manager_gaps` |
+| Active last run, now missing from AFAS | **Not** disabled; reported on every run (exit 3) until back in AFAS or marked handled (`missing ack`) |
+| Active last run, end date now further back than `leaver_lookback_days` (entered late) | Sent once more, disabled |
+| Active last run, start date moved into the future | Sent disabled; counts as a disable for the threshold |
 | Too few records / large drop / many data errors | Nothing uploaded, exit 20 |
 | More new disables than allowed | Nothing uploaded, exit 20 (to proceed deliberately: `--allow-mass-disable`) |
+| Many employee numbers new since the last run (changed mapping or prefix) | Nothing uploaded, exit 20 (`--allow-mass-create`) |
+| Many sign-in names (UPN) change at once | Nothing uploaded, exit 20 (`--allow-upn-changes`) |
 | Upload fails halfway | Stop, old state stays; the next run sends everything again |
 | Second run at the same time | Refused (lock file), exit 11 |
 
@@ -238,6 +249,13 @@ afas-entra-sync sync                                 # test run (dry-run), sends
 afas-entra-sync sync --apply                         # actually upload
 afas-entra-sync sync --as-of 2026-12-01              # test run as if it is that date
 afas-entra-sync sync --dump-payload /tmp/p.json      # test run + inspect the upload data
+afas-entra-sync sync --preview-html ~/preview.html   # test run + the account-by-account page for a browser
+afas-entra-sync preview [--all|--problems] [--sync]  # what the last test run would do (or the last sync did)
+afas-entra-sync preview --html f.html | --csv f.csv  # the same as a page or spreadsheet (personal data!)
+afas-entra-sync preview --demo                       # the preview with fictional people, no config needed
+afas-entra-sync missing list | missing ack <number>  # employees missing from AFAS while active; mark handled
+afas-entra-sync notify-test [--channel NAME]         # send an example message to the [notify] channels
+afas-entra-sync notify-test --render <dir>           # write example messages to files, send nothing
 afas-entra-sync check-config                         # only check the configuration
 afas-entra-sync check-logs --since-minutes 120       # check provisioning logs
 afas-entra-sync check-tls                            # TLS version, cipher and key exchange per endpoint
@@ -246,7 +264,7 @@ afas-entra-sync gui-enable                           # turn the GUI back on afte
 afas-entra-sync report [--employee N] [--since D] [--csv]   # access log of the modules
 afas-entra-sync exception add|list|remove            # time-limited exceptions to the role rules
 sudo afas-entra-sync install [--enable-sync] [flags] # install / upgrade on this host (see install --help)
-sudo afas-entra-sync module-setup roles|joiner|leaver [--renew]   # certificate + Entra steps for a module
+sudo afas-entra-sync module-setup roles|joiner|leaver|notify|preview [--renew]   # certificate + Entra steps
 sudo afas-entra-sync uninstall [--purge]             # remove (keeps config and state unless --purge)
 ```
 
@@ -254,7 +272,7 @@ sudo afas-entra-sync uninstall [--purge]             # remove (keeps config and 
 `-c <file>`, the environment variable `AFAS_ENTRA_SYNC_CONFIG`,
 `/etc/afas-entra-sync/config.toml`, `./afas-entra-sync.toml`.
 
-**Which user.** `sync`, `serve`, `gui-enable` and `exception add|remove` refuse to run as
+**Which user.** `sync`, `serve`, `gui-enable`, `check-logs`, `missing ack` and `exception add|remove` refuse to run as
 root when the state directory belongs to the service user, because root-owned files
 would break the next scheduled run. The message shows the right command
 (`sudo -u afas-sync afas-entra-sync ...`). `doctor`, `afas-fields` and the other
@@ -263,9 +281,15 @@ read-only commands work as any user that can read the configuration.
 **Output.** In a terminal, `sync` prints a short summary: what would change or changed,
 what needs attention, and the next step. With `--json`, or when the output goes to a file,
 Ansible, Semaphore or systemd, it prints the full report as JSON. The report is always
-written to `<state.dir>/last-report.json` too. It contains employee numbers and reasons,
-no names. Files are written with permissions 0600 (Linux). Note: `--dump-payload` *does*
-contain personal data.
+written to the state directory too: `last-report.json` by a sync, `last-dry-run-report.json`
+by a test run (so a manual test run never hides a failed scheduled sync from monitoring).
+It contains employee numbers and reasons, no names. Next to it: the log of the run
+(`last-run.log`, `last-dry-run.log`) and the preview (`last-preview.json`,
+`last-dry-run-preview.json`). Files are written with permissions 0600 (Linux). Note: the
+previews, `--dump-payload` and `--preview-html` *do* contain personal data.
+
+At a terminal only warnings and errors go to stderr (the summary is on stdout); under
+systemd, Ansible or Semaphore the whole run is logged, line by line.
 
 **Certificates.** Every run checks when the certificates of the provisioning app and of
 the enabled modules expire. From 30 days before, the report (and the GUI overview) says
@@ -289,7 +313,7 @@ Also in the GUI under *Run → Run health check*.
 | --- | --- |
 | 0 | All OK |
 | 2 | Invalid command line (unknown option or argument) |
-| 3 | Completed, but something needs attention: skipped or missing records, or a certificate that expires within 7 days |
+| 3 | Completed, but something needs attention: skipped or missing records, or a certificate that expires within 7 days; `check-logs`: the last upload was not processed |
 | 10 | Configuration error |
 | 11 | Another run is active |
 | 20 | Safety stop: **nothing** uploaded |
@@ -304,6 +328,62 @@ Also in the GUI under *Run → Run health check*.
 
 In Semaphore anything other than 0 is a failed task. That is deliberate:
 someone should see exit 3.
+
+## Test run preview
+
+A test run (`sync` without `--apply`) works out, per employee, what Microsoft would do:
+
+| Action | Meaning |
+| --- | --- |
+| Create / Create, disabled | A new account; disabled until the start date for a new hire |
+| Enable / Disable | Start date reached / end date passed (with the reason) |
+| Update | Which values change, old → new, with the AD attribute |
+| No change | Up to date. A value emptied in AFAS that stays in AD is still shown |
+| Link first | An account with this sign-in name exists without employee number: Microsoft would create a second one. Set `employeeID` first (guide, step 5d) |
+| Conflict | The sign-in name belongs to another employee number |
+| Skipped / Later / Not sent / Missing in AFAS | Not in the upload, and why |
+
+Each account also shows **where** it is (`example.com/Staff/Sales`, from AD through Entra;
+new accounts go to `preview.new_accounts_ou`) and in which upload call it goes.
+
+What it compares with: Entra ID as it is now, when an app registration that may read users
+is available (`[preview]`, or that of an enabled module; read-only, `User.Read.All`);
+otherwise what the last successful sync sent; on the very first run without a look-up,
+nothing (every account is "new for this tool"). Attributes that Entra does not show (cost
+center, for example) are not compared, and the preview says so. The look-up never makes a
+run fail.
+
+Where to see it: at a terminal right after the test run (the table fills up line by line),
+again with `afas-entra-sync preview`, in the GUI under **Preview** (with the flow from AFAS
+to Microsoft, accounts per OU, and a table that fills up call by call; downloads as page or
+CSV), or as a page you open in a browser (`sync --preview-html`, `preview --html`). A sync
+writes the same overview of what it sent (`preview --sync`, GUI: Last sync).
+
+## Notifications
+
+`[notify]` sends what people have to know after a sync or `check-logs`, to any number of
+channels: email (through Microsoft Graph, own app registration, `Mail.Send` scoped to one
+mailbox), Microsoft Teams (Workflows or incoming webhook), Slack (incoming webhook) or any
+HTTPS endpoint (signed JSON). Each point says what happened, what it means, why the tool does
+not fix it itself, what to do and who does it (IT or HR); the full log of the run goes along.
+
+| Point | For |
+| --- | --- |
+| The sync did not run (configuration, AFAS, sign-in, upload, unexpected), with what to check | IT |
+| Safety stop, per threshold, with the people involved and how to proceed deliberately | IT (and HR) |
+| A manager who left, is not in AFAS or is skipped, while employees still report to them | HR |
+| Employees missing from AFAS while their account stays enabled | HR and IT |
+| Data errors in AFAS, each with how to fix it | HR |
+| Sign-in names that change; values emptied in AFAS that stay in AD (a leave date in particular) | IT |
+| Modules that failed or stopped; certificates that expire | IT |
+| Provisioning failures Microsoft reports, with the likely cause; an upload that was never processed | IT |
+
+A failure is sent once and again after `repeat_hours` (24 by default) while it lasts; points
+of attention when something is new (marked NEW), and repeated while open; "the sync works
+again" and "all clear" once. Each channel can take only some points (`audience = ["hr"]`)
+or triggers (`on`). Employee numbers only by default; `personal_data = "names"` adds names
+and sign-in names. `notify-test` sends an example, `notify-test --render <dir>` writes the
+examples to files. Setup: [docs/MODULES.md](docs/MODULES.md#notifications).
 
 ## Configuration
 
@@ -349,7 +429,8 @@ Example with 600 employees and a run every hour:
 ## Behaviour you need to know
 
 - **Empty optional fields are omitted**, not sent as `null`. If *clear attribute values (preview)* is on in the mapping, Microsoft clears an attribute that is missing. An empty department in AFAS then empties the department in AD. That is usually what you want, but be aware of it.
-- **An employee who disappears from the GetConnector** (filtered, deleted) is not disabled automatically. They show up in `disappeared_while_active` and the run ends with exit 3.
+- **An employee who disappears from the GetConnector** (filtered, deleted) is not disabled automatically. They show up in `disappeared_while_active` and `missing` (with since when) on every run, which ends with exit 3, until they are back in AFAS or marked as handled with `missing ack <number>` (or in the GUI).
+- **Emptied values stay in AD**, unless *clear attribute values* is on. When a leave date is removed (contract extended) and Lifecycle Workflows use it, clear it by hand; the notification and the preview point it out.
 - **Multiple employments**: the GetConnector must return one row per employee. Two different rows for one employee number are skipped.
 - **A departing employee (leaver) without an existing account** within the lookback period is created by Microsoft as a disabled account. So keep `leaver_lookback_days` short.
 - **First run**: without state, every departing employee in the window counts as a possible disable. With a large first load the threshold applies; proceed deliberately with `--allow-mass-disable`.
@@ -380,8 +461,10 @@ environment. Do that in a pilot with a scoping filter.
 2. The `orderbyfieldids` parameter (used as in the Tools4ever AFAS connector; not found on the official AFAS page).
 3. The real behaviour of the provisioning engine with your mapping (matching, UPN, manager, clear attribute values).
 4. The `$filter` on `jobId` in `check-logs`.
-5. Certificate authentication against real Entra ID (the JWT is verified cryptographically).
-6. The TLS level the endpoints really negotiate from your network (`check-tls`).
+5. The preview's user look-up with `$expand=manager` (paged by 100), and which attributes Connect Sync really carries to Entra in your tenant.
+6. Delivery to your Teams Workflows URL, Slack app and mail tenant (`notify-test`).
+7. Certificate authentication against real Entra ID (the JWT is verified cryptographically).
+8. The TLS level the endpoints really negotiate from your network (`check-tls`).
 
 ## License
 

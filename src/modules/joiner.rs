@@ -10,7 +10,7 @@
 use super::records::{AccessEntry, append_access, now};
 use super::settings::{DeliverTo, JoinerConfig};
 use super::{Action, Ctx, Found, ModuleReport, ModuleState, Person, match_users, with_graph};
-use crate::graph::{GResult, Graph, GraphError, list_users, seg};
+use crate::graph::{GResult, Graph, GraphError, seg};
 use chrono::{NaiveDate, TimeZone};
 use reqwest::Method;
 use serde_json::json;
@@ -283,9 +283,10 @@ pub fn run(ctx: &Ctx<'_>, cfg: &JoinerConfig, state: &mut ModuleState) -> Module
     let horizon = ctx.today - chrono::Days::new(60);
     if ctx.apply {
         state.tap_issued.retain(|_, d| *d >= horizon);
+        state.tap_existing_noted.retain(|_, d| *d >= horizon);
     }
     let res = with_graph(ctx, &cfg.identity(), |g| -> Result<ModuleReport, String> {
-        let users = list_users(g).map_err(|e| format!("users: {e}"))?;
+        let users = ctx.users(g).map_err(|e| format!("users: {e}"))?;
         let found = match_users(ctx.people, &users);
         let (items, notes) = plan(cfg, ctx.people, &found, state, ctx.today);
         let mut rep = ModuleReport {
@@ -314,7 +315,19 @@ pub fn run(ctx: &Ctx<'_>, cfg: &JoinerConfig, state: &mut ModuleState) -> Module
                 if let Err(e) = &r
                     && e.code == EXISTING_PASS
                 {
-                    rep.notes.push(format!("{}: {}", it.employee_id, e.message));
+                    // Said once per start date; checked again every run, so deleting the
+                    // pass in Entra still makes the tool send a new one.
+                    if state.tap_existing_noted.get(&it.employee_id) != Some(&it.start_date) {
+                        rep.notes.push(format!("{}: {}", it.employee_id, e.message));
+                        state
+                            .tap_existing_noted
+                            .insert(it.employee_id.clone(), it.start_date);
+                    } else {
+                        rep.pending.push(format!(
+                            "{}: still has a Temporary Access Pass made elsewhere",
+                            it.employee_id
+                        ));
+                    }
                     continue;
                 }
                 let logged = append_access(

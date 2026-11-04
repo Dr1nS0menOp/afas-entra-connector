@@ -129,7 +129,7 @@ proptest! {
         let today = d("2026-10-30");
         let plan = build_plan(PlanInput {
             rows: &rows, fields: &cfg.afas.fields, policy: &cfg.policy, batch_size: batch as usize,
-            today, previous: None, allow_mass_disable: false,
+            today, previous: None, allow_mass_disable: false, allow_mass_create: false, allow_upn_changes: false,
         });
 
         let mut ids = HashSet::new();
@@ -163,7 +163,7 @@ proptest! {
         // Counts add up.
         let c = &plan.counts;
         prop_assert_eq!(c.sent_total, plan.records.len());
-        prop_assert_eq!(c.sent_active + c.sent_inactive_prehire + c.sent_inactive_leaver, c.sent_total);
+        prop_assert_eq!(c.sent_active + c.sent_inactive_prehire + c.sent_inactive_leaver + c.sent_inactive_outside_window, c.sent_total);
         prop_assert_eq!(c.api_calls_needed, plan.records.len().div_ceil(batch as usize));
         // Payloads: every record exactly once, never more than batch per call.
         let reqs = bulk_requests(&plan.records, batch as usize);
@@ -235,6 +235,8 @@ fn generator_covers_all_paths() {
             today: d("2026-10-30"),
             previous: None,
             allow_mass_disable: false,
+            allow_mass_create: false,
+            allow_upn_changes: false,
         });
         sent += p.counts.sent_total;
         active += p.counts.sent_active;

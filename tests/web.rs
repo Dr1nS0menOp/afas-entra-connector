@@ -327,7 +327,7 @@ fn settings_roundtrip_is_validated_audited_and_reversible() {
     let a = app(&e, false, None);
     let form = |min: &str| {
         format!(
-            "{}&policy.timezone=Europe%2FAmsterdam&policy.allowed_upn_domains=contoso.nl%2C+example.com&policy.prehire_days=30&policy.leaver_lookback_days=30&policy.min_records={min}&policy.max_drop_percent=10&policy.max_disables_per_run=10&policy.max_invalid_percent=10&policy.max_calls_per_run=100",
+            "{}&policy.timezone=Europe%2FAmsterdam&policy.allowed_upn_domains=contoso.nl%2C+example.com&policy.prehire_days=30&policy.leaver_lookback_days=30&policy.min_records={min}&policy.max_drop_percent=10&policy.max_disables_per_run=10&policy.max_invalid_percent=10&policy.max_calls_per_run=100&policy.max_new_per_run=25&policy.max_upn_changes_per_run=5",
             csrf(&a)
         )
     };
@@ -335,10 +335,8 @@ fn settings_roundtrip_is_validated_audited_and_reversible() {
     let c = Config::load(&e.cfg_path).unwrap();
     assert_eq!(c.policy.prehire_days, 30);
     assert_eq!(c.policy.min_records, 5);
-    assert_eq!(
-        c.policy.allowed_upn_domains,
-        vec!["contoso.nl", "example.com"]
-    );
+    // Which sign-in domains may exist is fixed in the config file: the GUI cannot add one.
+    assert_eq!(c.policy.allowed_upn_domains, vec!["contoso.nl"]);
     // Only differences from the base are in the GUI layer.
     let ov = std::fs::read_to_string(e.state("overrides.toml")).unwrap();
     assert!(
@@ -510,7 +508,8 @@ fn dry_run_as_of_and_bad_date() {
     assert!(get(&a, "/run?m=date").text().contains("YYYY-MM-DD"));
     post(&a, "/run/dry", &format!("{}&as_of=2030-12-31", csrf(&a)));
     let rep: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(e.state("last-report.json")).unwrap()).unwrap();
+        serde_json::from_slice(&std::fs::read(e.state("last-dry-run-report.json")).unwrap())
+            .unwrap();
     assert_eq!(rep["today"], "2030-12-31");
 }
 
@@ -1205,4 +1204,150 @@ fn health_check_runs_from_the_gui_and_shows_fixes() {
         "{page}"
     );
     assert!(page.contains("What to do: grant the application permission ProvisioningLog.Read.All"));
+}
+
+// ------------------------------------------------------------------ preview, missing, overrides (0.11)
+
+#[test]
+fn preview_page_shows_the_last_test_run_and_downloads_are_audited() {
+    let e = env("http://127.0.0.1:1");
+    let a = app(&e, false, None);
+    let empty = get(&a, "/preview").text();
+    assert!(empty.contains("No test run yet") && empty.contains("Go to Run"));
+    assert_eq!(get(&a, "/preview.csv").status, 404);
+    let demo = afas_entra_sync::preview::demo();
+    std::fs::write(
+        e.state("last-dry-run-preview.json"),
+        serde_json::to_vec(&demo).unwrap(),
+    )
+    .unwrap();
+    let page = get(&a, "/preview").text();
+    for part in [
+        "Microsoft would create 2 accounts",
+        "Where the accounts are",
+        "Call 1 of 4 to Microsoft",
+        "Senior adviseur",
+        "aria-current=page>Changes",
+        "Download CSV",
+    ] {
+        assert!(page.contains(part), "missing {part}");
+    }
+    assert!(
+        !page.contains("Colleague 10100"),
+        "unchanged accounts are not in Changes"
+    );
+    let all = get(&a, "/preview?of=dry&show=upload").text();
+    assert!(all.contains("Colleague 10100"));
+    let problems = get(&a, "/preview?of=dry&show=problems").text();
+    assert!(problems.contains("Link first") && !problems.contains("Senior adviseur"));
+    // The last sync has its own tab.
+    assert!(get(&a, "/preview?of=sync").text().contains("No sync yet"));
+    let csv = get(&a, "/preview.csv?of=dry");
+    assert_eq!(csv.status, 200);
+    assert!(
+        csv.disposition
+            .as_deref()
+            .unwrap()
+            .contains("afas-entra-test-run-preview.csv")
+    );
+    assert!(csv.text().starts_with("call,action,employee_number"));
+    let html = get(&a, "/preview.html?of=dry");
+    assert!(html.text().starts_with("<!doctype html>"));
+    let audit = std::fs::read_to_string(e.state("audit.log")).unwrap();
+    assert!(audit.contains("preview downloaded") && audit.contains("test-run csv"));
+    // In the menu.
+    assert!(get(&a, "/").text().contains("href=/preview"));
+}
+
+#[test]
+fn missing_employees_can_be_marked_handled_from_the_overview() {
+    use afas_entra_sync::state::{RecordState, STATE_VERSION, State, StateStore};
+    let e = env("http://127.0.0.1:1");
+    let a = app(&e, false, None);
+    let mut st = State {
+        version: STATE_VERSION,
+        last_success_utc: "2026-11-02T10:00:00Z".into(),
+        sent_total: 0,
+        records: Default::default(),
+    };
+    let mut gone = RecordState::new(true);
+    gone.missing_since = Some(d("2026-10-30"));
+    st.records.insert("00042".into(), gone);
+    StateStore::new(&e.state("")).unwrap().save(&st).unwrap();
+    let rep = serde_json::json!({
+        "mode": "apply", "started_utc": "2026-11-03T10:07:00Z", "today": "2026-11-03",
+        "counts": {}, "exit_code": 3, "result": "ok, but records need attention",
+        "missing": [ { "employee_id": "00042", "since": "2026-10-30" } ],
+        "manager_gaps": [ { "manager_id": "00007", "cause": "left", "date": "2026-10-01", "reports": ["00011", "00012"] } ]
+    });
+    std::fs::write(e.state("last-report.json"), rep.to_string()).unwrap();
+    let page = get(&a, "/").text();
+    assert!(page.contains("Missing from AFAS while active (1)") && page.contains("2026-10-30"));
+    assert!(page.contains("Mark handled"));
+    assert!(
+        page.contains("Managers who left or cannot be linked (1)") && page.contains("00011, 00012")
+    );
+    let r = post(&a, "/missing/ack", &format!("{}&employee=00042", csrf(&a)));
+    assert_eq!(r.status, 303, "{}", r.text());
+    let after = StateStore::new(&e.state(""))
+        .unwrap()
+        .load()
+        .unwrap()
+        .unwrap();
+    assert!(!after.records.contains_key("00042"));
+    assert!(
+        std::fs::read_to_string(e.state("audit.log"))
+            .unwrap()
+            .contains("missing acknowledged")
+    );
+    // A number that is not missing.
+    assert_eq!(
+        post(&a, "/missing/ack", &format!("{}&employee=99999", csrf(&a))).status,
+        409
+    );
+    // Without the form token: refused.
+    assert_eq!(post(&a, "/missing/ack", "employee=00042").status, 403);
+}
+
+#[test]
+fn a_newer_test_run_does_not_hide_the_last_sync() {
+    let e = env("http://127.0.0.1:1");
+    let a = app(&e, false, None);
+    let sync = serde_json::json!({"mode": "apply", "started_utc": "2026-11-03T09:07:00+00:00", "today": "2026-11-03", "counts": {}, "exit_code": 41, "result": "upload error: HTTP 500"});
+    let dry = serde_json::json!({"mode": "dry-run", "started_utc": "2026-11-03T10:30:00+00:00", "today": "2026-11-03", "counts": {}, "exit_code": 0, "result": "ok"});
+    std::fs::write(e.state("last-report.json"), sync.to_string()).unwrap();
+    std::fs::write(e.state("last-dry-run-report.json"), dry.to_string()).unwrap();
+    let page = get(&a, "/").text();
+    assert!(
+        page.contains("upload error: HTTP 500"),
+        "the failed sync stays visible"
+    );
+    assert!(page.contains("A newer test run"));
+}
+
+#[test]
+fn every_threshold_override_needs_the_strong_confirmation() {
+    let e = env("http://127.0.0.1:1");
+    let a = app(&e, false, None);
+    let page = get(&a, "/run").text();
+    assert!(page.contains("name=allow_mass_create") && page.contains("name=allow_upn_changes"));
+    for flag in ["allow_mass_create", "allow_upn_changes"] {
+        let r = post(
+            &a,
+            "/run/apply",
+            &format!("{}&{flag}=on&confirm={CONFIRM_APPLY}", csrf(&a)),
+        );
+        assert_eq!(r.status, 400, "{flag}");
+        assert!(r.text().contains(CONFIRM_MASS));
+    }
+}
+
+#[test]
+fn notification_test_button_only_with_notify() {
+    let e = env("http://127.0.0.1:1");
+    let a = app(&e, false, None);
+    assert!(!get(&a, "/run").text().contains("Send a test message"));
+    let r = post(&a, "/notify/test", &csrf(&a));
+    assert_eq!(r.status, 303);
+    assert!(r.location.unwrap().contains("notnotify"));
 }

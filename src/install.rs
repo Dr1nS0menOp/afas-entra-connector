@@ -638,6 +638,10 @@ pub enum SetupModule {
     Roles,
     Joiner,
     Leaver,
+    /// Email notifications (Graph sendMail).
+    Notify,
+    /// Read-only look-up for the test-run preview.
+    Preview,
 }
 
 impl SetupModule {
@@ -646,7 +650,11 @@ impl SetupModule {
             "roles" => Ok(Self::Roles),
             "joiner" | "new-hires" => Ok(Self::Joiner),
             "leaver" | "departing" => Ok(Self::Leaver),
-            _ => Err(format!("unknown module {s:?}: use roles, joiner or leaver")),
+            "notify" | "notifications" => Ok(Self::Notify),
+            "preview" => Ok(Self::Preview),
+            _ => Err(format!(
+                "unknown module {s:?}: use roles, joiner, leaver, notify or preview"
+            )),
         }
     }
     /// Config section and file prefix.
@@ -655,6 +663,8 @@ impl SetupModule {
             Self::Roles => "roles",
             Self::Joiner => "joiner",
             Self::Leaver => "leaver",
+            Self::Notify => "notify",
+            Self::Preview => "preview",
         }
     }
     pub fn title(self) -> &'static str {
@@ -662,6 +672,8 @@ impl SetupModule {
             Self::Roles => "Roles and licences",
             Self::Joiner => "New hires (joiner)",
             Self::Leaver => "Departing employees (leaver)",
+            Self::Notify => "Notifications by email",
+            Self::Preview => "Test-run preview (read-only look-up in Entra)",
         }
     }
     /// Microsoft Graph application permissions granted in Entra.
@@ -674,6 +686,8 @@ impl SetupModule {
                 "User.Read.All",
                 "MailboxSettings.ReadWrite",
             ],
+            Self::Notify => &[],
+            Self::Preview => &["User.Read.All"],
         }
     }
 }
@@ -744,31 +758,46 @@ pub fn module_setup(sys: &dyn System, o: &ModuleSetupOptions) -> Result<String, 
     sys.say(&format!(
         "  2. Certificates & secrets > Certificates > Upload: {cert_abs}\n     Thumbprint shown by Entra: {tp}. Do not create a client secret."
     ));
-    sys.say(&format!(
-        "  3. API permissions > Add > Microsoft Graph > Application permissions:\n     {perms}\n     then Grant admin consent."
-    ));
+    if perms.is_empty() {
+        sys.say("  3. API permissions: add none in Entra (remove the default User.Read).");
+    } else {
+        sys.say(&format!(
+            "  3. API permissions > Add > Microsoft Graph > Application permissions:\n     {perms}\n     then Grant admin consent."
+        ));
+    }
     let mut n = 4;
-    if o.module == SetupModule::Joiner {
-        sys.say("  4. Mail.Send: do NOT grant it in Entra. Grant it with Exchange RBAC for Applications,\n     scoped to the sender mailbox (PowerShell in docs/MODULES.md). Turn on the\n     Temporary Access Pass method under Authentication methods > Policies.");
-        n += 1;
+    match o.module {
+        SetupModule::Joiner => {
+            sys.say("  4. Mail.Send: do NOT grant it in Entra. Grant it with Exchange RBAC for Applications,\n     scoped to the sender mailbox (PowerShell in docs/MODULES.md). Turn on the\n     Temporary Access Pass method under Authentication methods > Policies.");
+            n += 1;
+        }
+        SetupModule::Notify => {
+            sys.say("  4. Mail.Send: do NOT grant it in Entra. Grant it with Exchange RBAC for Applications,\n     scoped to the sender mailbox only (PowerShell in docs/MODULES.md, Notifications).");
+            n += 1;
+        }
+        _ => {}
     }
     sys.say(&format!(
         "  {n}. Add this to {CFG_DIR}/config.toml (client_id = the Application (client) ID):\n"
     ));
-    let extra = match o.module {
-        SetupModule::Roles => {
-            "group_prefix = \"AFAS-\"\n\n[[roles.rule]]\ngroup_id = \"<object id of a cloud security group>\"\nall = true\n"
-        }
-        SetupModule::Joiner => {
-            "sender = \"<mailbox that sends the code>\"\ndeliver_to = \"manager\"\nfixed_address = \"<service desk address>\"\n"
-        }
-        SetupModule::Leaver => {
-            "# auto_reply = \"{display_name} no longer works here. Please contact {manager_name} ({manager_email}).\"\n"
-        }
+    let section = match o.module {
+        SetupModule::Roles => format!(
+            "[roles]\nenabled = true\nclient_id = \"<application id>\"\ncertificate_pem = \"{cert_abs}\"\nprivate_key_pem = \"{key_abs}\"\ngroup_prefix = \"AFAS-\"\n\n[[roles.rule]]\ngroup_id = \"<object id of a cloud security group>\"\nall = true\n"
+        ),
+        SetupModule::Joiner => format!(
+            "[joiner]\nenabled = true\nclient_id = \"<application id>\"\ncertificate_pem = \"{cert_abs}\"\nprivate_key_pem = \"{key_abs}\"\nsender = \"<mailbox that sends the code>\"\ndeliver_to = \"manager\"\nfixed_address = \"<service desk address>\"\n"
+        ),
+        SetupModule::Leaver => format!(
+            "[leaver]\nenabled = true\nclient_id = \"<application id>\"\ncertificate_pem = \"{cert_abs}\"\nprivate_key_pem = \"{key_abs}\"\n# auto_reply = \"{{display_name}} no longer works here. Please contact {{manager_name}} ({{manager_email}}).\"\n"
+        ),
+        SetupModule::Notify => format!(
+            "[notify]\non = [\"failure\", \"attention\", \"recovered\"]\n\n[notify.email]\nclient_id = \"<application id>\"\ncertificate_pem = \"{cert_abs}\"\nprivate_key_pem = \"{key_abs}\"\nsender = \"<mailbox that sends the reports>\"\n\n[[notify.channel]]\nkind = \"email\"\nname = \"identity-team\"\nto = [\"<team mailbox>\"]\n"
+        ),
+        SetupModule::Preview => format!(
+            "[preview]\nclient_id = \"<application id>\"\ncertificate_pem = \"{cert_abs}\"\nprivate_key_pem = \"{key_abs}\"\n# new_accounts_ou = \"OU=New hires,OU=Staff,DC=example,DC=com\"\n"
+        ),
     };
-    sys.say(&format!(
-        "[{m}]\nenabled = true\nclient_id = \"<application id>\"\ncertificate_pem = \"{cert_abs}\"\nprivate_key_pem = \"{key_abs}\"\n{extra}"
-    ));
+    sys.say(&section);
     sys.say(&format!(
         "  {}. Check it: sudo -u {SERVICE_USER} afas-entra-sync doctor\n     then a test run: sudo -u {SERVICE_USER} afas-entra-sync sync",
         n + 1

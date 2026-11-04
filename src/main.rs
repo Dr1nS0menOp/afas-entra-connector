@@ -8,9 +8,7 @@
 )]
 
 use afas_entra_sync::config::Config;
-use afas_entra_sync::entra::{Credential, TokenProvider, read_logs};
 use afas_entra_sync::error::{AppError, exit};
-use afas_entra_sync::http::build_client;
 use afas_entra_sync::sync::{RunOptions, run};
 use chrono::NaiveDate;
 use clap::{Parser, Subcommand};
@@ -60,13 +58,71 @@ enum Cmd {
         /// Deliberately proceed when the disable threshold is hit.
         #[arg(long)]
         allow_mass_disable: bool,
+        /// Deliberately proceed when more employees are new than policy.max_new_per_run.
+        #[arg(long)]
+        allow_mass_create: bool,
+        /// Deliberately proceed when more sign-in names (UPN) change than
+        /// policy.max_upn_changes_per_run.
+        #[arg(long)]
+        allow_upn_changes: bool,
         /// Write the SCIM payloads to this file (contains personal data!).
         #[arg(long)]
         dump_payload: Option<PathBuf>,
+        /// Also write what happens per account as a page you can open in a browser
+        /// (contains personal data!).
+        #[arg(long)]
+        preview_html: Option<PathBuf>,
+        /// Test run: also send the notifications from [notify] (a sync always does).
+        #[arg(long)]
+        notify: bool,
         /// Print the full report as JSON (the default when the output is not a terminal,
         /// e.g. in Ansible, Semaphore or systemd).
         #[arg(long)]
         json: bool,
+    },
+    /// What the last test run would do (or, with --sync, what the last sync did), account
+    /// by account: create, enable, disable, update or nothing, where, and what changes.
+    Preview {
+        /// Every account, also those without changes and those not sent.
+        #[arg(long)]
+        all: bool,
+        /// Only the accounts that need attention.
+        #[arg(long)]
+        problems: bool,
+        /// The last sync instead of the last test run.
+        #[arg(long)]
+        sync: bool,
+        /// Write a page to open in a browser, with the table filling up call by call
+        /// (contains personal data!).
+        #[arg(long)]
+        html: Option<PathBuf>,
+        /// Write a CSV file (contains personal data!).
+        #[arg(long)]
+        csv: Option<PathBuf>,
+        /// JSON instead of a table.
+        #[arg(long)]
+        json: bool,
+        /// Example data with fictional people: see what the preview looks like without
+        /// AFAS or a configuration.
+        #[arg(long)]
+        demo: bool,
+        /// Print the table at once instead of filling it line by line.
+        #[arg(long)]
+        no_animation: bool,
+    },
+    /// Employees who were sent as active and are no longer in AFAS. Their accounts are
+    /// not disabled automatically and are reported on every run until handled.
+    #[command(subcommand)]
+    Missing(MissingCmd),
+    /// Send a test message (with fictional example points) to every channel in [notify].
+    NotifyTest {
+        /// Only this channel (its name, or kind-number such as teams-2).
+        #[arg(long)]
+        channel: Option<String>,
+        /// Send nothing: write example messages (email as HTML, Teams, Slack and webhook as
+        /// JSON) to this directory, to see what reports look like. Needs no configuration.
+        #[arg(long)]
+        render: Option<PathBuf>,
     },
     /// Turn the GUI back on after it was turned off from the GUI. Only works if
     /// `[gui] enabled = true` is set in the config file.
@@ -140,8 +196,9 @@ enum Cmd {
     /// certificate and key with the right owner and permissions, and prints the steps in
     /// Entra and the config section to add. Run as root.
     ModuleSetup {
-        /// roles, joiner (new hires) or leaver (departing employees).
-        #[arg(value_parser = ["roles", "joiner", "leaver"])]
+        /// roles, joiner (new hires), leaver (departing employees), notify (email
+        /// notifications) or preview (read-only look-up for the test-run preview).
+        #[arg(value_parser = ["roles", "joiner", "leaver", "notify", "preview"])]
         module: String,
         /// Create a new certificate (the old one is kept as *.pem.old).
         #[arg(long)]
@@ -182,6 +239,21 @@ enum Cmd {
 }
 
 #[derive(Subcommand)]
+enum MissingCmd {
+    /// List them, with since when.
+    List,
+    /// Mark as handled (for example after disabling the account in AD by hand): they are
+    /// no longer reported. They come back as new if they reappear in AFAS and disappear again.
+    Ack {
+        /// Employee numbers.
+        ids: Vec<String>,
+        /// All of them.
+        #[arg(long)]
+        all: bool,
+    },
+}
+
+#[derive(Subcommand)]
 enum ExceptionCmd {
     /// Add an exception: keep someone in (include) or out of (exclude) a group until a date.
     Add {
@@ -208,17 +280,123 @@ enum ExceptionCmd {
 }
 
 fn main() {
+    use tracing_subscriber::filter::LevelFilter;
+    use tracing_subscriber::prelude::*;
     // Colour codes only on a terminal; in Semaphore, journald or Graylog they produce garbage.
-    tracing_subscriber::fmt()
+    // At a terminal only warnings and errors (the summary is on stdout); elsewhere the
+    // whole run, so the journal holds the full log. The run log file always has it all.
+    let tty = std::io::IsTerminal::is_terminal(&std::io::stderr());
+    let stderr = tracing_subscriber::fmt::layer()
         .with_writer(std::io::stderr)
-        .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stderr()))
+        .with_ansi(tty)
         .with_target(false)
+        .with_filter(if tty {
+            LevelFilter::WARN
+        } else {
+            LevelFilter::INFO
+        });
+    tracing_subscriber::registry()
+        .with(stderr)
+        .with(afas_entra_sync::logcap::Layer.with_filter(LevelFilter::INFO))
         .init();
     std::process::exit(real_main());
 }
 
+/// Prints lines; at a terminal they appear one by one, so the table visibly fills up.
+fn print_filling(lines: &[String], animate: bool) {
+    use std::io::Write;
+    let mut out = std::io::stdout().lock();
+    let per_line = if animate && !lines.is_empty() {
+        std::time::Duration::from_millis((2500 / lines.len() as u64).clamp(2, 18))
+    } else {
+        std::time::Duration::ZERO
+    };
+    for l in lines {
+        let _ = writeln!(out, "{l}");
+        if !per_line.is_zero() {
+            let _ = out.flush();
+            std::thread::sleep(per_line);
+        }
+    }
+}
+
+fn color_ok() -> bool {
+    std::io::IsTerminal::is_terminal(&std::io::stdout())
+        && std::env::var_os("NO_COLOR").is_none_or(|v| v.is_empty())
+}
+
+/// `notify-test --render <dir>`: example messages as files, nothing sent.
+fn render_samples(dir: &std::path::Path) -> i32 {
+    use afas_entra_sync::notify::{render, sample};
+    if let Err(e) = std::fs::create_dir_all(dir) {
+        return fail(&AppError::Config(format!(
+            "cannot create {}: {e}",
+            dir.display()
+        )));
+    }
+    let attention = sample(render::Event::Attention, true);
+    let failure = sample(render::Event::Failure, true);
+    let numbers = sample(render::Event::Attention, false);
+    let pretty = |v: &serde_json::Value| serde_json::to_vec_pretty(v).unwrap_or_default();
+    let files: Vec<(&str, Vec<u8>)> = vec![
+        (
+            "email-attention.html",
+            render::email(&attention).1.into_bytes(),
+        ),
+        ("email-failure.html", render::email(&failure).1.into_bytes()),
+        (
+            "email-employee-numbers-only.html",
+            render::email(&numbers).1.into_bytes(),
+        ),
+        ("teams-attention.json", pretty(&render::teams(&numbers))),
+        ("teams-failure.json", pretty(&render::teams(&failure))),
+        ("slack-attention.json", pretty(&render::slack(&numbers))),
+        ("slack-failure.json", pretty(&render::slack(&failure))),
+        ("webhook-attention.json", pretty(&render::webhook(&numbers))),
+    ];
+    for (name, body) in files {
+        let p = dir.join(name);
+        if let Err(e) = afas_entra_sync::state::write_atomic(&p, &body) {
+            return fail(&e);
+        }
+        println!("{}", p.display());
+    }
+    println!(
+        "\nExamples with fictional people. Paste a Teams file's \"content\" into adaptivecards.io/designer, a Slack file into app.slack.com/block-kit-builder."
+    );
+    exit::OK
+}
+
 fn real_main() -> i32 {
     let cli = Cli::parse();
+    if let Cmd::NotifyTest {
+        render: Some(dir), ..
+    } = &cli.cmd
+    {
+        return render_samples(dir);
+    }
+    if let Cmd::Preview {
+        demo: true,
+        all,
+        problems,
+        html,
+        csv,
+        json,
+        no_animation,
+        ..
+    } = &cli.cmd
+    {
+        return show_preview(
+            &afas_entra_sync::preview::demo(),
+            *all,
+            *problems,
+            html.as_deref(),
+            csv.as_deref(),
+            *json,
+            !*no_animation,
+            None,
+        );
+    }
     let config_path = afas_entra_sync::ux::resolve_config(
         cli.config.clone(),
         std::env::var_os(afas_entra_sync::ux::CONFIG_ENV),
@@ -250,6 +428,8 @@ fn real_main() -> i32 {
         Cmd::Sync { .. }
             | Cmd::Serve { .. }
             | Cmd::GuiEnable
+            | Cmd::CheckLogs { .. }
+            | Cmd::Missing(MissingCmd::Ack { .. })
             | Cmd::Exception(ExceptionCmd::Add { .. } | ExceptionCmd::Remove { .. })
     );
     if writes {
@@ -274,28 +454,64 @@ fn real_main() -> i32 {
             apply,
             as_of,
             allow_mass_disable,
+            allow_mass_create,
+            allow_upn_changes,
             dump_payload,
+            preview_html,
+            notify,
             json,
         } => {
             let human = !json && std::io::IsTerminal::is_terminal(&std::io::stdout());
-            let show = |r: &afas_entra_sync::sync::Report| {
-                if human {
-                    print!("{}", afas_entra_sync::ux::sync_summary(r));
-                } else {
-                    print_json(r);
-                }
-            };
             let opts = RunOptions {
                 apply,
                 as_of,
                 allow_mass_disable,
+                allow_mass_create,
+                allow_upn_changes,
                 dump_payload,
+                preview_html: preview_html.clone(),
+                notify,
                 use_system_proxy: true,
                 actor: if std::env::var_os("INVOCATION_ID").is_some() {
                     "systemd".into()
                 } else {
                     "cli".into()
                 },
+            };
+            let show = |r: &afas_entra_sync::sync::Report| {
+                if !human {
+                    print_json(r);
+                    return;
+                }
+                print!("{}", afas_entra_sync::ux::sync_summary(r));
+                // What happens per account, as a table that fills up.
+                let file = afas_entra_sync::state::preview_file(apply);
+                if let Some(p) = std::fs::read(cfg.state.dir.join(file))
+                    .ok()
+                    .and_then(|b| {
+                        serde_json::from_slice::<afas_entra_sync::preview::Preview>(&b).ok()
+                    })
+                    .filter(|p| p.created_utc >= r.started_utc)
+                {
+                    println!();
+                    let lines = afas_entra_sync::preview::render_text(
+                        &p,
+                        afas_entra_sync::preview::Show::Changes,
+                        color_ok(),
+                        60,
+                    );
+                    print_filling(&lines, true);
+                    println!(
+                        "\nWhole table: afas-entra-sync preview{} --all, or --html <file> to open it in a browser.",
+                        if apply { " --sync" } else { "" }
+                    );
+                    if let Some(h) = &preview_html {
+                        println!(
+                            "Page written: {} (contains personal data; delete it after use).",
+                            h.display()
+                        );
+                    }
+                }
             };
             match run(&cfg, &opts, &sleep) {
                 Ok(r) => {
@@ -310,6 +526,112 @@ fn real_main() -> i32 {
                 }
             }
         }
+        Cmd::Preview {
+            all,
+            problems,
+            sync,
+            html,
+            csv,
+            json,
+            no_animation,
+            demo: _,
+        } => {
+            let file = afas_entra_sync::state::preview_file(sync);
+            match std::fs::read(cfg.state.dir.join(file)) {
+                Err(_) => {
+                    eprintln!(
+                        "no preview yet ({} in {}): run {} first",
+                        file,
+                        cfg.state.dir.display(),
+                        if sync {
+                            "a sync (sync --apply)"
+                        } else {
+                            "a test run (sync)"
+                        }
+                    );
+                    exit::CONFIG
+                }
+                Ok(b) => match serde_json::from_slice::<afas_entra_sync::preview::Preview>(&b) {
+                    Ok(p) => show_preview(
+                        &p,
+                        all,
+                        problems,
+                        html.as_deref(),
+                        csv.as_deref(),
+                        json,
+                        !no_animation,
+                        Some(cfg.tz()),
+                    ),
+                    Err(e) => fail(&AppError::Config(format!("{file} cannot be read: {e}"))),
+                },
+            }
+        }
+        Cmd::Missing(MissingCmd::List) => {
+            let store = match afas_entra_sync::state::StateStore::new(&cfg.state.dir) {
+                Ok(s) => s,
+                Err(e) => return fail(&e),
+            };
+            match store.load() {
+                Ok(st) => {
+                    let list: Vec<serde_json::Value> = st
+                        .map(|s| {
+                            s.records
+                                .iter()
+                                .filter(|(_, r)| r.is_missing())
+                                .map(|(id, r)| {
+                                    serde_json::json!({
+                                        "employee_id": id,
+                                        "missing_since": r.missing_since,
+                                        "upn": r.upn(),
+                                        "display_name": r.sent.get("displayName"),
+                                    })
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    print_json(&list);
+                    exit::OK
+                }
+                Err(e) => fail(&e),
+            }
+        }
+        Cmd::Missing(MissingCmd::Ack { ids, all }) => {
+            if ids.is_empty() != all {
+                eprintln!("give employee numbers, or --all (not both)");
+                return exit::CONFIG;
+            }
+            let store = match afas_entra_sync::state::StateStore::new(&cfg.state.dir) {
+                Ok(s) => s,
+                Err(e) => return fail(&e),
+            };
+            match store.acknowledge_missing(&ids) {
+                Ok(done) => {
+                    let who = if std::env::var_os("SUDO_USER").is_some() {
+                        format!("cli:{}", std::env::var("SUDO_USER").unwrap_or_default())
+                    } else {
+                        "cli".into()
+                    };
+                    afas_entra_sync::web::audit(
+                        &cfg.state.dir,
+                        &who,
+                        "missing acknowledged",
+                        &done.join(", "),
+                    );
+                    println!(
+                        "{} marked as handled: {}",
+                        done.len(),
+                        if done.is_empty() {
+                            "(none)".to_string()
+                        } else {
+                            done.join(", ")
+                        }
+                    );
+                    exit::OK
+                }
+                Err(e) => fail(&e),
+            }
+        }
+        Cmd::NotifyTest { channel, render: _ } => notify_test(&cfg, channel.as_deref(), &sleep),
         Cmd::Serve {
             listen,
             read_only,
@@ -390,27 +712,165 @@ fn real_main() -> i32 {
                     "--since-minutes must be between 1 and 10080".into(),
                 ));
             }
-            let res = (|| {
-                let client = build_client(cfg.entra.timeout_secs, true, &cfg.tls)
-                    .map_err(AppError::Config)?;
-                let cred = Credential::from_config(&cfg.entra)?;
-                let tokens = TokenProvider::new(&cfg.entra, &client, cred, &sleep);
-                let since = chrono::Utc::now() - chrono::Duration::minutes(since_minutes);
-                read_logs(&cfg.entra, &client, &tokens, since)
-            })();
-            match res {
-                Ok(sum) => {
-                    print_json(&sum);
-                    if sum.failure > 0 {
-                        exit::LOG_FAILURES
-                    } else {
-                        exit::OK
-                    }
+            let rep = afas_entra_sync::sync::check_logs(&cfg, since_minutes, true, &sleep);
+            // Same shape as before (the summary), plus warnings, error and exit code.
+            let mut v =
+                serde_json::to_value(rep.summary.clone().unwrap_or_default()).unwrap_or_default();
+            if let Some(o) = v.as_object_mut() {
+                o.insert("warnings".into(), serde_json::json!(rep.warnings));
+                if let Some(e) = &rep.error {
+                    o.insert("error".into(), serde_json::json!(e));
                 }
-                Err(e) => fail(&e),
+                o.insert("exit_code".into(), serde_json::json!(rep.exit_code));
             }
+            print_json(&v);
+            if let Some(e) = &rep.error {
+                eprintln!("error: {e}");
+            }
+            rep.exit_code
         }
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn show_preview(
+    p: &afas_entra_sync::preview::Preview,
+    all: bool,
+    problems: bool,
+    html: Option<&std::path::Path>,
+    csv: Option<&std::path::Path>,
+    json: bool,
+    animate: bool,
+    tz: Option<chrono_tz::Tz>,
+) -> i32 {
+    use afas_entra_sync::preview::{Show, render_csv, render_page, render_text};
+    use afas_entra_sync::state::write_atomic;
+    let mut wrote = false;
+    if let Some(h) = html {
+        if let Err(e) = write_atomic(h, render_page(p, tz).as_bytes()) {
+            return fail(&e);
+        }
+        println!(
+            "Page written: {} (open it in a browser; contains personal data, delete it after use).",
+            h.display()
+        );
+        wrote = true;
+    }
+    if let Some(c) = csv {
+        if let Err(e) = write_atomic(c, render_csv(p).as_bytes()) {
+            return fail(&e);
+        }
+        println!("CSV written: {} (contains personal data).", c.display());
+        wrote = true;
+    }
+    if json {
+        print_json(p);
+        return exit::OK;
+    }
+    if wrote {
+        return exit::OK;
+    }
+    let show = if all {
+        Show::All
+    } else if problems {
+        Show::Problems
+    } else {
+        Show::Changes
+    };
+    let tty = std::io::IsTerminal::is_terminal(&std::io::stdout());
+    let lines = render_text(p, show, color_ok(), if all { usize::MAX } else { 300 });
+    print_filling(&lines, animate && tty);
+    exit::OK
+}
+
+fn notify_test(cfg: &Config, only: Option<&str>, sleep: &dyn Fn(std::time::Duration)) -> i32 {
+    use afas_entra_sync::notify;
+    let Some(n) = cfg.notify.as_ref() else {
+        eprintln!("there is no [notify] section in the configuration");
+        return exit::CONFIG;
+    };
+    let mut test_cfg = cfg.clone();
+    if let Some(name) = only {
+        let Some(nc) = test_cfg.notify.as_mut() else {
+            return exit::CONFIG;
+        };
+        let keep: Vec<_> = n
+            .channels
+            .iter()
+            .enumerate()
+            .filter(|(i, c)| c.id(*i) == name)
+            .map(|(_, c)| c.clone())
+            .collect();
+        if keep.is_empty() {
+            eprintln!(
+                "no channel '{name}'; channels: {}",
+                n.channels
+                    .iter()
+                    .enumerate()
+                    .map(|(i, c)| c.id(i))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+            return exit::CONFIG;
+        }
+        // Keep the name, so the message says which channel it is.
+        nc.channels = keep
+            .into_iter()
+            .map(|mut c| {
+                c.name = Some(name.to_string());
+                c
+            })
+            .collect();
+    }
+    if let Some(nc) = test_cfg.notify.as_mut() {
+        nc.enabled = true;
+    }
+    let host = notify::host_name();
+    let ctx = notify::Context {
+        cfg: &test_cfg,
+        source: "Test message".into(),
+        host: host.clone(),
+        log: vec![afas_entra_sync::logcap::format_line(
+            &tracing::Level::INFO,
+            "this is a test message from notify-test",
+            "",
+        )],
+        log_path: None,
+        report: None,
+        use_system_proxy: true,
+        sleep,
+        now: chrono::Utc::now(),
+    };
+    let facts = vec![
+        (
+            "Run".to_string(),
+            "notify-test (nothing was synchronised)".to_string(),
+        ),
+        ("Server".to_string(), host),
+    ];
+    let res = notify::dispatch(
+        &ctx,
+        "test",
+        notify::Outcome::Attention,
+        &|_| Vec::new(),
+        &facts,
+        None,
+        Some(notify::render::Event::Test),
+    );
+    let mut ok = true;
+    for d in &res {
+        println!(
+            "{:<20} {}",
+            d.channel,
+            if d.ok {
+                "sent".to_string()
+            } else {
+                format!("FAILED: {}", d.detail)
+            }
+        );
+        ok &= d.ok;
+    }
+    if ok { exit::OK } else { exit::MODULE_FAILED }
 }
 
 /// Removes `gui.enabled = false` from the GUI layer. The base config stays the master switch.

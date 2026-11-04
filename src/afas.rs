@@ -102,6 +102,12 @@ pub fn fetch_rows(
         }
         let done = page.len() < take;
         prev_first = page.first().cloned();
+        tracing::info!(
+            "AFAS GetConnector {}: page from row {} returned {} rows",
+            cfg.connector,
+            all.len() + 1,
+            page.len()
+        );
         all.extend(page);
         if all.len() > MAX_ROWS {
             return Err(AppError::Source(format!(
